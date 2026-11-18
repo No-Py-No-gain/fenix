@@ -1,0 +1,36 @@
+# Secretos y entorno local: nunca se versionan credenciales.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Entorno virtual y artefactos de empaquetado.
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Bytecode y cachés de herramientas.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime del laboratorio: se regenera, no se versiona (ver consigna 5.8).
+logs/
+data/
+.localstack/
+
+# Material de la consigna: export de Notion y plantilla original.
+docs/
+
+# Sistema operativo y editores.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
