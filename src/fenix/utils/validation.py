@@ -1,6 +1,6 @@
 """Contratos de validación a completar por el integrante 1."""
 import re  # Comprueba el formato de los identificadores.
-from datetime import datetime, timezone  # Trabaja con fechas conscientes de UTC.
+from datetime import datetime, timedelta, timezone #Trabaja con fechas conscientes de UTC.
 from fenix.utils.errors import ValidationError  # Error público del dominio.
 
 
@@ -17,9 +17,21 @@ def identifier(value: str) -> str:
     Examples:
         identifier("grupo-01") devuelve "grupo-01"; "../ajeno" debe fallar.
     """
-    # TODO I1-A: usar isinstance y re.fullmatch con r"[a-z0-9-]{3,32}".
-    # No convertir automáticamente a minúsculas: podría cambiar la identidad.
-    raise NotImplementedError("I1-A: validar identifier")  # Quitar al completar.
+        # 1. Comprobar que el valor sea texto.
+    if not isinstance(value, str):
+        raise ValidationError(
+            "El identificador debe ser una cadena de texto."
+        )
+
+    # 2. Validar el formato completo del identificador.
+    if re.fullmatch(r"[a-z0-9-]{3,32}", value) is None:
+        raise ValidationError(
+            "El identificador debe tener entre 3 y 32 caracteres "
+            "y contener solo minúsculas, números o guiones."
+        )
+
+    # 3. Devolver el identificador original.
+    return value
 
 
 def ttl_seconds(value: str) -> int:
@@ -35,9 +47,31 @@ def ttl_seconds(value: str) -> int:
     Notes:
         La CLI traduce ValidationError a parser.error para salir con código 2.
     """
-    # TODO I1-B: convertir con int y capturar ValueError con encadenamiento.
-    # Comprobar 60 <= ttl <= 600; no aceptar decimales ni valores negativos.
-    raise NotImplementedError("I1-B: validar TTL")  # Sustituir por la validación.
+
+    if not isinstance(value, str):
+        raise ValidationError(
+            "El TTL debe recibirse como una cadena de texto."
+        )
+    # I1-B: Convertir el texto recibido a un número entero.
+    try:
+        ttl = int(value)
+
+    # Si el texto no representa un entero válido,
+    # capturamos ValueError y lanzamos nuestro error.
+    except ValueError as error:
+        raise ValidationError(
+            "El TTL debe ser un número entero válido."
+        ) from error
+
+    # Comprobar que el TTL esté dentro del rango permitido.
+    if not 60 <= ttl <= 600:
+        raise ValidationError(
+            "El TTL debe estar entre 60 y 600 segundos."
+        )
+
+    # Devolver el TTL como número entero.
+    return ttl
+
 
 
 def utc_text(value: str) -> datetime:
@@ -51,6 +85,38 @@ def utc_text(value: str) -> datetime:
         ValidationError: Si falta zona, hay offset no nulo o formato inválido.
         NotImplementedError: Mientras no se complete TODO I1-C.
     """
-    # TODO I1-C: usar fromisoformat, reemplazando Z por +00:00.
-    # Rechazar tzinfo ausente y utcoffset distinto de timedelta(0).
-    raise NotImplementedError("I1-C: interpretar UTC")  # No usar hora local.
+
+    # I1-C: Comprobar que la fecha recibida sea texto.
+    if not isinstance(value, str):
+        raise ValidationError(
+            "La fecha debe recibirse como una cadena de texto."
+        )
+
+    # Reemplazar el sufijo Z por +00:00.
+    # Ambos representan la zona horaria UTC.
+    texto_fecha = value.replace("Z", "+00:00")
+
+    # Intentar convertir el texto a un objeto datetime.
+    try:
+        fecha = datetime.fromisoformat(texto_fecha)
+
+    # Capturar fechas que no tengan un formato válido.
+    except ValueError as error:
+        raise ValidationError(
+            "La fecha debe tener un formato ISO 8601 válido."
+        ) from error
+
+    # Comprobar que la fecha tenga zona horaria explícita.
+    if fecha.tzinfo is None:
+        raise ValidationError(
+            "La fecha debe incluir explícitamente la zona horaria UTC."
+        )
+
+    # Comprobar que el desplazamiento horario sea cero.
+    if fecha.utcoffset() != timedelta(0):
+        raise ValidationError(
+            "La fecha debe estar expresada en UTC."
+        )
+
+    # Normalizar la fecha a la zona horaria UTC.
+    return fecha.astimezone(timezone.utc)
