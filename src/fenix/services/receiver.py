@@ -22,22 +22,39 @@ async def webhook(request: Request) -> dict:
         JSON con status=accepted, event_id y message_id de SQS.
     Raises:
         HTTPException: 401 firma; 400 JSON; 413 tamaño; 422 contrato; 503 SQS.
-        NotImplementedError: Mientras no se complete TODO I3-B.
     Side Effects:
         Publica en SQS; no repara recursos ni llama a Telegram/Slack aquí.
     Notes:
         Leer bytes completos basta para el laboratorio; un proxy limitaría antes
         el tamaño de la transferencia en un despliegue real.
+        El orden importa: tamaño, autenticación, lectura, contrato y recién ahí SQS.
+        El secreto ausente es una falla de configuración del servidor (503), no del
+        cliente: no se responde 401 por un problema que el emisor no puede corregir.
     """
     raw = await request.body()  # Se conservan los bytes originales.
     if len(raw) > 16384:  # Mantiene acotados los ejemplos didácticos.
         raise HTTPException(413, "Cuerpo demasiado grande")  # No encola.
-    # TODO I3-B: verify(os.environ["WEBHOOK_SECRET"], cabecera, raw).
-    # Capturar ValidationError de la firma como HTTPException(401, mensaje genérico).
-    # Luego json.loads(raw); JSONDecodeError o UnicodeDecodeError -> 400.
-    # Validar contra load("data/inventory.json"); ValidationError de esquema -> 422.
-    # Usar await run_in_threadpool para load y llamadas Boto3 bloqueantes.
-    # Obtener queue_url(os.environ["QUEUE_PREFIX"]) y llamar publish.
-    # ClientError/BotoCoreError -> 503, sin prometer aceptación ni mostrar secretos.
-    # Retornar accepted/event_id/message_id únicamente después de send_message exitoso.
-    raise NotImplementedError("I3-B: completar receptor HTTP")
+    secret = os.environ.get("WEBHOOK_SECRET", "")  # Nunca se registra ni se repite.
+    if len(secret) < 16:  # Misma exigencia que la firma: falla cerrado y temprano.
+        raise HTTPException(503, "Receptor sin configurar")  # No promete aceptación.
+    try:
+        verify(secret, request.headers.get("X-Webhook-Signature", ""), raw)  # Bytes.
+    except ValidationError as error:  # Formato, firma o ventana: misma respuesta.
+        raise HTTPException(401, "Firma inválida") from error  # Sin detalle interno.
+    try:
+        cuerpo = json.loads(raw)  # Recién ahora se interpreta el contenido.
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:  # Roto o no UTF-8.
+        raise HTTPException(400, "JSON inválido") from error
+    try:  # El disco y Boto3 bloquean: se ejecutan fuera del bucle de eventos.
+        inventario = await run_in_threadpool(load, "data/inventory.json")
+        evento = validate(cuerpo, inventario)  # Función pura: solo valida el contrato.
+        url = await run_in_threadpool(queue_url, os.environ["QUEUE_PREFIX"])
+        message_id = await run_in_threadpool(publish, url, evento)  # send_message real.
+    except ValidationError as error:  # JSON válido con contrato incorrecto.
+        raise HTTPException(422, "Evento inválido") from error
+    except KeyError as error:  # Falta QUEUE_PREFIX: configuración, no culpa del emisor.
+        raise HTTPException(503, "Receptor sin configurar") from error
+    except (ClientError, BotoCoreError) as error:  # SQS caído o credenciales rechazadas.
+        raise HTTPException(503, "Mensajería no disponible") from error
+    return {"status": "accepted", "event_id": evento["event_id"],  # Solo con ACK de SQS.
+            "message_id": message_id}  # Identificador del mensaje, no del recurso.
