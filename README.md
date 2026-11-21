@@ -1,11 +1,21 @@
 # Fénix — Sistema de autorreparación de infraestructura
 
-Trabajo Final · Programación para Automatización II · Opción 4.3.1 · Grupo `grupo01`
+Trabajo Final · Programación para Automatización II
 
 Un webhook autenticado recibe una alerta de monitoreo, la guarda en SQS y un worker separado
 repara el recurso emulado por Boto3 y avisa por Telegram. Dos reparaciones, chicas y verificables:
 una instancia EC2 mock detenida vuelve a `running` y un bucket S3 recupera sus etiquetas
 obligatorias.
+
+---
+## Integrantes del grupo
+
+- **Gaita, Juan Pablo**
+- **Gonza, Rodrigo Eduardo**
+
+## Defensa del Proyecto
+
+[Ver Video de la defensa del proyecto](https://drive.google.com/drive/folders/1zIU2S00WuZtohHmhn764tl8N11a2cpJA?usp=sharing)
 
 ---
 
@@ -30,14 +40,14 @@ avisar, y los que fallan de forma persistente llegan a la DLQ.
 
 ## 2. Integrantes y roles
 
-| Rol | Apellido y nombre | Correo | Módulos | Pruebas defendidas |
-| --- | --- | --- | --- | --- |
-| I1 — Entradas y excepciones | _(completar)_ | _(completar)_ | `utils/errors.py`, `utils/validation.py`, `services/events.py` | F06 (esquema), F07 |
-| I2 — Mensajería e inventario cloud | _(completar)_ | _(completar)_ | `services/sqs.py`, `services/demo.py` | F01, F09, F10 |
-| I3 — Webhooks y reparación | _(completar)_ | _(completar)_ | `utils/crypto.py`, `services/receiver.py`, `services/remediation.py` (`repair`) | F02, F03, F04, F05, F06, F07, F13 |
-| I4 — Observabilidad y aviso | _(completar)_ | _(completar)_ | `utils/logging_json.py`, `services/notifications.py` | F14, F16 |
-| I5 — Integración y worker | _(completar)_ | _(completar)_ | `services/worker.py`, `services/remediation.py` (`handle`), `cli.py` | F02 completo, F08, F11, F12, F15 |
-| I6 — Pruebas y diagnóstico | _(completar)_ | _(completar)_ | `tests/`, `demo.inject_fault` | Matriz completa y derivación a DLQ |
+| Rol | Apellido y nombre | Módulos | 
+| --- | --- | --- |
+| I1 — Entradas y excepciones | Gaita, Juan Pablo | `utils/errors.py`, `utils/validation.py`, `services/events.py` | 
+| I2 — Mensajería e inventario cloud | Gaita, Juan Pablo | `services/sqs.py`, `services/demo.py` | 
+| I3 — Webhooks y reparación | Gonza, Rodrigo Eduardo | `utils/crypto.py`, `services/receiver.py`, `services/remediation.py` (`repair`) | 
+| I4 — Observabilidad y aviso | Gonza, Rodrigo Eduardo | `utils/logging_json.py`, `services/notifications.py` | 
+| I5 — Integración y worker | _(pendiente)_ | `services/worker.py`, `services/remediation.py` (`handle`), `cli.py` | 
+| I6 — Pruebas y diagnóstico | _(pendiente)_ | `tests/`, `demo.inject_fault` | Matriz completa y derivación a DLQ |
 
 _(La tabla debe completarse con apellido, nombre y correo antes de entregar: §2.1 lo exige y no se
 inventan datos de integrantes.)_
@@ -49,7 +59,7 @@ correcto y uno de fallo. Ver la sección 9.
 
 | Elemento | Versión usada |
 | --- | --- |
-| Python | **3.14.4** (el proyecto declara `>=3.11`; todo el grupo usa la misma) |
+| Python | **3.14.4** |
 | Docker | Docker Engine o Docker Desktop, con el daemon iniciado |
 | LocalStack | imagen **`localstack/localstack:4`** → 4.14.0, edición community |
 | Sistema | Linux, macOS o WSL |
@@ -384,27 +394,7 @@ mientras existan recursos: es lo que permite reconocerlos. Apagar LocalStack pue
 recursos emulados, así que al reiniciar desde cero hay que verificar y reconciliar el manifiesto, no
 dar por válidos IDs antiguos.
 
-## 11. Video de defensa y declaración de ayuda externa
-
-**Video**: _(completar con el enlace del video)_
-
-| Momento | Contenido | Integrante |
-| --- | --- | --- |
-| _(completar)_ | Apertura: problema, alcance y decisiones generales | _(completar)_ |
-| _(completar)_ | Rol I1 — entradas y excepciones | _(completar)_ |
-| _(completar)_ | Rol I2 — mensajería e inventario cloud | _(completar)_ |
-| _(completar)_ | Rol I3 — webhooks y reparación | _(completar)_ |
-| _(completar)_ | Rol I4 — observabilidad y aviso | _(completar)_ |
-| _(completar)_ | Rol I5 — integración y worker | _(completar)_ |
-| _(completar)_ | Rol I6 — pruebas y diagnóstico | _(completar)_ |
-
-**Declaración de ayuda externa e IA.** _Se permite IA como apoyo si se declara qué se utilizó, qué se
-modificó y cómo se verificó (§2.2). Completar con el detalle real antes de entregar: herramienta
-usada, tareas asistidas, qué se revisó o reescribió a mano y con qué prueba se validó cada parte.
-Cada integrante debe poder explicar y modificar su código en vivo: el video no reemplaza la defensa
-oral individual del programa._
-
-## 12. Entregables del repositorio
+## 11. Entregables del repositorio
 
 ```
 src/fenix/            código (config/, services/, utils/, cli.py)
