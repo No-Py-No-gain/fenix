@@ -12,6 +12,9 @@ def setup_demo(group: str) -> dict:
         group: ID validado del grupo; determina prefijos de los recursos.
     Returns:
         Inventario con aliases node-01 y bucket-01 y sus IDs reales del emulador.
+        Cada registro incluye `expected_tags` con la política de §3.3, y node-01
+        además `security_group_id`: sin la política la reparación no puede
+        verificar su estado deseado.
     Raises:
         ClientError: Si el emulador no soporta una operación o falla su ejecución.
     Side Effects:
@@ -19,6 +22,8 @@ def setup_demo(group: str) -> dict:
     Notes:
         Reutilizar por tags antes de crear y guardar IDs después de cada creación.
         Obtener una ImageId con describe_images; no copiar una AMI de AWS real.
+        La instancia recuperada se reconcilia con create_tags: una corrida anterior
+        puede haberla creado sin la etiqueta Owner.
     """
     # ============================================================
     # I2-C: VALIDAR EL IDENTIFICADOR DEL GRUPO
@@ -246,6 +251,7 @@ def setup_demo(group: str) -> dict:
                         {"Key": "Project", "Value": "fenix"},
                         {"Key": "GroupId", "Value": group},
                         {"Key": "Name", "Value": instance_name},
+                        {"Key": "Owner", "Value": group},
                     ],
                 }
             ],
@@ -253,6 +259,26 @@ def setup_demo(group: str) -> dict:
 
         # Guardamos el identificador de la instancia creada.
         instance_id = respuesta_creacion["Instances"][0]["InstanceId"]
+
+    # ============================================================
+    # I2-C: RECONCILIAR LAS ETIQUETAS DE LA INSTANCIA
+    # ============================================================
+
+    # Una instancia recuperada de una corrida anterior puede no tener todavía
+    # todas las etiquetas que exige el contrato. create_tags es idempotente:
+    # agrega o corrige las que falten sin crear ni adoptar otro recurso.
+    # Se reconcilia sin rechazar la instancia, porque su identidad ya se
+    # verificó arriba y el recurso es nuestro.
+    ec2.create_tags(
+        Resources=[instance_id],
+        Tags=[
+            {"Key": "ManagedBy", "Value": "ppa2"},
+            {"Key": "Project", "Value": "fenix"},
+            {"Key": "GroupId", "Value": group},
+            {"Key": "Name", "Value": instance_name},
+            {"Key": "Owner", "Value": group},
+        ],
+    )
 
     # ============================================================
     # I2-C: BUSCAR UN BUCKET S3 EXISTENTE
@@ -463,11 +489,14 @@ def setup_demo(group: str) -> dict:
             "id": instance_id,
             "group": group,
             "image_id": image_id,
+            "security_group_id": sg_id,
+            "expected_tags": dict(etiquetas_esperadas),
         },
         "bucket-01": {
             "type": "s3",
             "id": bucket_name,
             "group": group,
+            "expected_tags": dict(etiquetas_esperadas),
         },
     }
 
@@ -496,6 +525,7 @@ def setup_demo(group: str) -> dict:
         or tags_ec2.get("Project") != "fenix"
         or tags_ec2.get("GroupId") != group
         or tags_ec2.get("Name") != instance_name
+        or tags_ec2.get("Owner") != group
     ):
         raise RuntimeError(
             "No se pudo verificar la propiedad de la instancia EC2."
