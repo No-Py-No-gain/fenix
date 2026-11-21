@@ -31,6 +31,7 @@ Se usó la etiqueta `4`, que corre sin token en la edición community.
 | F13 | SQS no disponible al recibir el webhook | `503`, sin aceptación falsa | `503` con `ClientError` y con `BotoCoreError` | `test_receiver.py::test_f13_*` | I3 |
 | F14 | Aviso con 429, timeout y luego éxito | Aviso transitorio acotado, sin filtar el token | `RetryableError` con `reintentar_despues=30`, sin token en el mensaje | `test_notifications.py::test_f14_*` | I4 |
 | F16 | Forzar rotación, abrir el `.gz` y parsear cada línea | JSON válido, UTC y contexto completo | 40 líneas íntegras entre activo e históricos, sin `.tmp` huérfanos | `tests/test_logging_json.py::test_f16_rotacion_comprimida_es_legible` | I4 |
+| — | Aviso real al canal elegido (§5.3.1) | Envío confirmado por el proveedor | `ok=true` y mensaje recibido en el chat privado | `notify()` con `NOTIFY_PROVIDER=telegram` | I4 |
 | F02 | Evento válido de punta a punta | `202` con `event_id` y `message_id` | **Pendiente**: requiere `events.validate` de I1 | — | I3 |
 | F08 | Mensaje directo a SQS con JSON corrupto | El worker sigue y el mensaje va a la DLQ | **Pendiente**: requiere el worker de I5 | — | I5 |
 | F10 | Falla persistente con `simulate_failures=5` | Sin ACK, derivación automática a la DLQ | **Pendiente**: requiere el worker de I5 | — | I5 |
@@ -104,13 +105,26 @@ El bucket de comprobación se eliminó en la misma corrida para no dejar recurso
 inventario. No se creó ninguna instancia ni cola: eso corresponde a `setup-demo` e `init-queues`
 de I2, que todavía no están implementados.
 
+## Evidencia 5 — aviso real al canal elegido
+
+El `chat_id` inicialmente configurado (`9139765941`) era el identificador del bot, no el de una
+persona: Telegram respondía `403 Forbidden: the bot can't send messages to the bot`. Un bot de
+BotFather no contesta `/start` por sí solo; sólo deja el mensaje como *update* pendiente. Tras
+enviar `/start` desde la cuenta del integrante, `getUpdates` devolvió el chat real (privado) y el
+envío quedó confirmado:
+
+```
+$ NOTIFY_PROVIDER=telegram TELEGRAM_CHAT_ID=<chat real> python -c 'from fenix.services...notify(...)'
+RESULTADO: el proveedor confirmo el envio (ok=true)
+```
+
+`getWebhookInfo` confirmó que el bot no tiene webhook configurado, que es la condición para que
+`getUpdates` entregue los mensajes. Un HTTP 200 no se tomó como prueba: la confirmación es el
+`ok=true` del JSON, tal como exige el contrato.
+
 ## Pendientes, con su motivo
 
-1. **Aviso real al canal elegido.** El `chat_id` recibido (`9139765941`) es el identificador del
-   bot `MyAppFenix0101Bot`, no el chat de una persona: Telegram responde
-   `403 Forbidden: the bot can't send messages to the bot`. Falta que un integrante abra el bot en
-   Telegram y le envíe `/start`; después el `chat_id` real se obtiene con `getUpdates` y se guarda
-   en el `.env`. El adaptador ya está implementado y probado; lo único que falta es la credencial.
+1. ~~Aviso real al canal elegido~~: **resuelto**, ver la Evidencia 5.
 2. **`WEBHOOK_SECRET` ausente del entorno del grupo.** El receptor falla cerrado con `503` si no
    está. Para esta evidencia se exportó un secreto de fixture en el proceso; el entregable necesita
    el propio, generado con `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
