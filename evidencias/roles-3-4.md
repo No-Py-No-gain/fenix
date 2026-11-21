@@ -40,8 +40,13 @@ Se usó la etiqueta `4`, que corre sin token en la edición community.
 ## Evidencia 1 — respuestas HTTP reales
 
 Servidor: `python -m uvicorn fenix.services.receiver:app --host 127.0.0.1 --port 8002 --workers 1`,
-un solo proceso, `WEBHOOK_SECRET` de 43 caracteres exportado en el entorno de la corrida.
-Los cuerpos se firmaron con `fenix.utils.crypto.signature`, el mismo firmador de la CLI.
+un solo proceso, con el `WEBHOOK_SECRET` exportado en el entorno de la corrida. Los cuerpos se
+firmaron con `fenix.utils.crypto.signature`, el mismo firmador de la CLI.
+
+La corrida se repitió dos veces: primero con un secreto de fixture y después con el **secreto real
+del grupo**, tomado del archivo de configuración (43 caracteres) y exportado al proceso sin
+imprimirlo en ningún paso. El resultado fue idéntico 8 de 8, así que la evidencia es reproducible
+con la configuración real y no depende de un valor de prueba.
 
 ```
 F04 firma ausente                    -> HTTP 401  {"detail":"Firma inválida"}
@@ -125,9 +130,12 @@ RESULTADO: el proveedor confirmo el envio (ok=true)
 ## Pendientes, con su motivo
 
 1. ~~Aviso real al canal elegido~~: **resuelto**, ver la Evidencia 5.
-2. **`WEBHOOK_SECRET` ausente del entorno del grupo.** El receptor falla cerrado con `503` si no
-   está. Para esta evidencia se exportó un secreto de fixture en el proceso; el entregable necesita
-   el propio, generado con `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+2. ~~`WEBHOOK_SECRET` ausente del entorno del grupo~~: **resuelto**. El secreto está cargado (43
+   caracteres, sin espacios ni comillas) y con él se repitió la Evidencia 1 completa. El receptor
+   lo lee del entorno, así que al arrancarlo conviene la forma explícita de §5.6,
+   `python -m uvicorn fenix.services.receiver:app ... --env-file <archivo>`, o exportarlo antes:
+   si se arranca sin ninguna de las dos, el primer request responde 503 porque el secreto se lee
+   antes de que cualquier cliente Boto3 cargue el archivo.
 3. **F02, F08, F10 y F12** dependen de módulos de I1, I2 e I5 todavía sin implementar.
 
 ## Cómo reproducir
