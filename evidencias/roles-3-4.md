@@ -32,7 +32,7 @@ Se usó la etiqueta `4`, que corre sin token en la edición community.
 | F14 | Aviso con 429, timeout y luego éxito | Aviso transitorio acotado, sin filtar el token | `RetryableError` con `reintentar_despues=30`, sin token en el mensaje | `test_notifications.py::test_f14_*` | I4 |
 | F16 | Forzar rotación, abrir el `.gz` y parsear cada línea | JSON válido, UTC y contexto completo | 40 líneas íntegras entre activo e históricos, sin `.tmp` huérfanos | `tests/test_logging_json.py::test_f16_rotacion_comprimida_es_legible` | I4 |
 | — | Aviso real al canal elegido (§5.3.1) | Envío confirmado por el proveedor | `ok=true` y mensaje recibido en el chat privado | `notify()` con `NOTIFY_PROVIDER=telegram` | I4 |
-| F02 | Evento válido de punta a punta | `202` con `event_id` y `message_id` | **Pendiente**: requiere `events.validate` de I1 | — | I3 |
+| F02 | Evento válido de punta a punta | `202` con `event_id` y `message_id` | `202` con ambos identificadores y el mensaje en la cola real | Evidencia 6 | I3 |
 | F08 | Mensaje directo a SQS con JSON corrupto | El worker sigue y el mensaje va a la DLQ | **Pendiente**: requiere el worker de I5 | — | I5 |
 | F10 | Falla persistente con `simulate_failures=5` | Sin ACK, derivación automática a la DLQ | **Pendiente**: requiere el worker de I5 | — | I5 |
 | F12 | Corte después de `repair_done` y antes de `notify` | El reinicio recupera sólo el aviso pendiente | **Pendiente**: requiere `remediation.handle` de I5 | — | I5 |
@@ -174,3 +174,35 @@ python -m uvicorn fenix.services.receiver:app --host 127.0.0.1 --port 8002 --wor
 
 Ninguna prueba de este documento toca recursos compartidos: los clientes Boto3 se sustituyen por
 dobles con `monkeypatch` en los tests, y la única corrida contra el emulador borra lo que crea.
+
+## Evidencia 6 — flujo nominal completo: receptor, CLI y cola real
+
+Con `main` ya fusionado (I1-I2, I3 e I4), se ejecutó la secuencia de §5.6 tal cual, sin atajos:
+
+```
+$ python -m fenix.cli init-queues
+('http://.../fenix-grupo01-events', 'http://.../fenix-grupo01-dlq')
+$ python -m fenix.cli init-queues      # segunda vez: mismas URLs, sin duplicados (F01)
+('http://.../fenix-grupo01-events', 'http://.../fenix-grupo01-dlq')
+$ python -m fenix.cli setup-demo
+{'node-01': {'type': 'ec2', 'id': 'i-84d8d65082d8f650d', ...}, 'bucket-01': {...}}
+$ python -m uvicorn fenix.services.receiver:app --host 127.0.0.1 --port 8000 --workers 1
+$ python -m fenix.cli send examples/node-event.json
+202 {"status":"accepted","event_id":"evt-node-001","message_id":"89ca3084-e7d4-48b1-9067-847abfbd704c"}
+```
+
+Y el mensaje leído de la cola real con Boto3:
+
+```
+cola: fenix-grupo01-events
+MessageId: 89ca3084-e7d4-48b1-9067-847abfbd704c
+event_id: evt-node-001 | event_type: instance.stopped | resource_id: node-01
+Body: {"schema_version": 1, "event_id": "evt-node-001", ...}
+```
+
+El `message_id` del 202 y el `MessageId` de la cola son **el mismo**: la respuesta no promete nada
+que SQS no haya confirmado. La visibilidad se devolvió a 0 con `change_message_visibility` para que
+el worker de I5 pueda consumirlo; no se borró nada.
+
+**Lo que todavía no se demuestra**: el worker. Con `worker.run` y `remediation.handle` pendientes
+(I5), el mensaje queda en la cola y F08, F10 y F12 siguen esperando ese módulo.
