@@ -12,6 +12,7 @@ obligatorias.
 
 - **Gaita, Juan Pablo**
 - **Gonza, Rodrigo Eduardo**
+- **Pistán, David**
 
 ## Defensa del Proyecto
 
@@ -46,8 +47,8 @@ avisar, y los que fallan de forma persistente llegan a la DLQ.
 | I2 — Mensajería e inventario cloud | Gaita, Juan Pablo | `services/sqs.py`, `services/demo.py` | 
 | I3 — Webhooks y reparación | Gonza, Rodrigo Eduardo | `utils/crypto.py`, `services/receiver.py`, `services/remediation.py` (`repair`) | 
 | I4 — Observabilidad y aviso | Gonza, Rodrigo Eduardo | `utils/logging_json.py`, `services/notifications.py` | 
-| I5 — Integración y worker | _(pendiente)_ | `services/worker.py`, `services/remediation.py` (`handle`), `cli.py` | 
-| I6 — Pruebas y diagnóstico | _(pendiente)_ | `tests/`, `demo.inject_fault` | Matriz completa y derivación a DLQ |
+| I5 — Integración y worker | Pistán, David | `services/worker.py`, `services/remediation.py` (`handle`), `cli.py` | 
+| I6 — Pruebas y diagnóstico | Pistán, David | `tests/`, `demo.inject_fault` |
 
 _(La tabla debe completarse con apellido, nombre y correo antes de entregar: §2.1 lo exige y no se
 inventan datos de integrantes.)_
