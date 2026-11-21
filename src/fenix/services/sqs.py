@@ -12,7 +12,6 @@ def ensure_queues(prefix: str) -> tuple[str, str]:
         Tupla (work_url, dlq_url), tomada de las respuestas de Boto3.
     Raises:
         ClientError: Si SQS rechaza una operación; la CLI lo registra.
-        NotImplementedError: Mientras falte TODO I2-A.
     Side Effects:
         Crea dos colas y actualiza RedrivePolicy en la cola principal.
     Notes:
@@ -23,11 +22,49 @@ def ensure_queues(prefix: str) -> tuple[str, str]:
         "MessageRetentionPeriod": "1209600"})["QueueUrl"]  # Retiene 14 días.
     arn = sqs.get_queue_attributes(QueueUrl=dead,
         AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]  # No inventa ARN.
-    # TODO I2-A: crear {prefix}-events con VisibilityTimeout="45" y retención "345600".
-    # Crear RedrivePolicy con json.dumps, deadLetterTargetArn=arn y maxReceiveCount="3".
-    # Usar set_queue_attributes para asegurar la política aunque la cola exista.
-    # Retornar las URLs devueltas por SQS; no construirlas con strings.
-    raise NotImplementedError("I2-A: completar cola principal y RedrivePolicy")
+    # ============================================================
+    # I2-A: CREACIÓN DE LA COLA PRINCIPAL
+    # ============================================================
+
+    # Creamos o reutilizamos la cola de eventos del laboratorio.
+    # VisibilityTimeout: 45 segundos.
+    # MessageRetentionPeriod: 345600 segundos (4 días).
+    work = sqs.create_queue(
+        QueueName=f"{prefix}-events",
+        Attributes={
+            "VisibilityTimeout": "45",
+            "MessageRetentionPeriod": "345600",
+        },
+    )["QueueUrl"]
+
+        # ============================================================
+    # I2-A: CONFIGURACIÓN DE REDRIVE POLICY
+    # ============================================================
+
+    # Definimos la política que conecta la cola principal
+    # con la Dead Letter Queue (DLQ).
+    redrive_policy = {
+        "deadLetterTargetArn": arn,
+        "maxReceiveCount": "3",
+    }
+
+    # Convertimos el diccionario a texto JSON,
+    # que es el formato requerido por SQS.
+    redrive_policy_json = json.dumps(redrive_policy)
+
+    # Aplicamos la política a la cola principal.
+    # También funciona cuando la cola ya existía.
+    sqs.set_queue_attributes(
+        QueueUrl=work,
+        Attributes={
+            "RedrivePolicy": redrive_policy_json,
+        },
+    )
+
+    # Devolvemos las URLs reales de ambas colas.
+    return work, dead
+
+
 
 
 def queue_url(prefix: str) -> str:
@@ -116,12 +153,39 @@ def retry_later(url: str, message: dict) -> int:
         Segundos asignados: min(30, 2 ** número_de_recepción).
     Raises:
         ClientError: Si no se pudo cambiar la visibilidad.
-        NotImplementedError: Mientras falte TODO I2-B.
     Side Effects:
         Cambia la visibilidad; RedrivePolicy sigue controlando la DLQ.
     """
-    # TODO I2-B: leer int(message["Attributes"]["ApproximateReceiveCount"]).
-    # Calcular min(30, 2 ** count) y llamar change_message_visibility.
-    # Pasar el ReceiptHandle actual; retornar segundos para registrarlos.
-    # Nunca send_message aquí: una copia reiniciaría la cuenta de recepciones.
-    raise NotImplementedError("I2-B: programar backoff con visibilidad")
+    # ============================================================
+    # I2-B: OBTENER EL NÚMERO DE RECEPCIÓN
+    # ============================================================
+
+    # SQS informa cuántas veces fue recibido este mensaje.
+    # Convertimos ese valor de texto a número entero.
+    count = int(
+        message["Attributes"]["ApproximateReceiveCount"]
+    )
+    # ============================================================
+    # I2-B: CALCULAR EL BACKOFF EXPONENCIAL
+    # ============================================================
+
+    # Calculamos el tiempo de espera según las recepciones.
+    # El resultado nunca puede superar los 30 segundos.
+    segundos = min(30, 2 ** count)
+    # ============================================================
+    # I2-B: CAMBIAR LA VISIBILIDAD DEL MENSAJE
+    # ============================================================
+
+    # Obtenemos el identificador de la recepción actual.
+    # No debemos confundir ReceiptHandle con MessageId.
+    receipt = message["ReceiptHandle"]
+
+    # Solicitamos a SQS que oculte temporalmente el mensaje.
+    client("sqs").change_message_visibility(
+        QueueUrl=url,
+        ReceiptHandle=receipt,
+        VisibilityTimeout=segundos,
+    )
+
+    # Devolvemos los segundos asignados para poder registrarlos.
+    return segundos
