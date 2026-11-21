@@ -239,6 +239,26 @@ def test_escritura_que_no_se_observa_pide_reintento(emulador):
         remediation.repair(BUCKET, "bucket.tags_missing")
 
 
+def test_inventario_sin_expected_tags_no_se_da_por_reparado(emulador):
+    """Sin política declarada no hay estado deseado: no se puede declarar already_ok.
+
+    Un inventario que no guarda `expected_tags` (§3.3) haría que la comparación con
+    una política vacía diera siempre verdadera y el bucket quedara "correcto" sin
+    haber verificado nada. Es un fallo permanente, no un éxito silencioso.
+    """
+    s3 = emulador(S3Falso(etiquetas={"ManagedBy": "ppa2"}))
+    with pytest.raises(PermanentError):
+        remediation.repair({"type": "s3", "id": "bucket-01"}, "bucket.tags_missing")
+    assert s3.escrituras == []  # Tampoco se escribe a ciegas.
+
+
+def test_recurso_sin_identificador_se_rechaza(emulador):
+    """Un registro de inventario sin id no se resuelve con un valor por defecto."""
+    emulador(EC2Falso(["running"]))
+    with pytest.raises(PermanentError):
+        remediation.repair({"type": "ec2"}, "instance.stopped")
+
+
 @pytest.mark.parametrize(
     "resource, event_type",
     [

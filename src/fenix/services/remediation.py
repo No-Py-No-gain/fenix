@@ -110,6 +110,8 @@ def _reparar_etiquetas(resource: dict) -> str:
     s3 = client("s3")
     bucket = resource["id"]  # Nombre propio del grupo, no un nombre elegido por el emisor.
     esperadas = dict(resource.get("expected_tags") or {})  # Política mínima obligatoria.
+    if not esperadas:  # Sin política declarada no se puede verificar el estado deseado.
+        raise PermanentError("El inventario no declara expected_tags para este recurso")
     actuales = _etiquetas_actuales(s3, bucket)
     if all(actuales.get(clave) == valor for clave, valor in esperadas.items()):
         return "already_ok"  # Ya converge: no se reescribe ni se notifica de nuevo.
@@ -143,8 +145,13 @@ def repair(resource: dict, event_type: str) -> str:
         ajeno detrás de un recurso inventariado.
         La propiedad del recurso la valida I1 contra el inventario antes de llegar
         aquí: esta función sólo recibe registros autorizados.
+        Un registro sin expected_tags es una violación del contrato de §3.3, no un
+        recurso sin nada que hacer: devolver "already_ok" ahí sería declarar éxito
+        sin haber verificado nada.
     """
     tipo = resource.get("type")  # El par evento/recurso no se adivina.
+    if not resource.get("id"):  # Sin identificador no hay nada que verificar.
+        raise PermanentError("El inventario no declara el identificador del recurso")
     try:  # Un único punto de traducción de errores del SDK.
         if event_type == "instance.stopped" and tipo == "ec2":
             return _reparar_instancia(resource)

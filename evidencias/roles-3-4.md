@@ -138,6 +138,28 @@ RESULTADO: el proveedor confirmo el envio (ok=true)
    antes de que cualquier cliente Boto3 cargue el archivo.
 3. **F02, F08, F10 y F12** dependen de módulos de I1, I2 e I5 todavía sin implementar.
 
+## Hallazgo de integración — contrato del inventario (§3.3)
+
+Con los módulos de I1 e I2 ya en `main`, `init-queues` y `setup-demo` se ejecutaron sobre el
+emulador real (ambas idempotentes: la segunda corrida devolvió las mismas URLs y los mismos IDs).
+El inventario generado **no persiste `expected_tags` para ninguno de los dos recursos, ni
+`security_group_id` para `node-01`**, aunque §3.3 los exige textualmente:
+
+> El inventario guarda para node-01 type=ec2, id=InstanceId, security_group_id y expected_tags;
+> Para bucket-01 type=s3, id=BucketName y expected_tags.
+
+Los recursos en la nube **sí** están etiquetados correctamente (`ManagedBy=ppa2`, `Project=fenix`,
+`GroupId=grupo01`; el bucket además con `Owner=grupo01`), pero la instancia EC2 **no tiene la
+etiqueta `Owner`**, que §3.3 también exige para ambos.
+
+Efecto observado antes del arreglo: `repair` recibía una política vacía, la comparación daba
+verdadera y el bucket quedaba declarado `already_ok` sin haber verificado nada. Eso es declarar
+éxito después de un fallo, prohibido por §4.2.2. Corregido del lado de I3: un registro sin
+`expected_tags` o sin `id` ahora levanta `PermanentError` en lugar de inventar conformidad.
+
+Queda pendiente del lado de I2 persistir el contrato completo en `data/inventory.json` y agregar
+`Owner` a la instancia; sin eso la reparación de etiquetas no puede verificar su estado deseado.
+
 ## Cómo reproducir
 
 ```bash
