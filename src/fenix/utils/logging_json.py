@@ -1,4 +1,19 @@
-"""Apoyo reutilizable de Tritón y Vulcano; integrante 4 debe verificarlo."""
+"""Apoyo reutilizable de Tritón y Vulcano; integrante 4 debe verificarlo.
+
+Notas de la revisión de I4 (verificadas sobre la stdlib del intérprete del grupo):
+    - `QueueHandler.prepare()` formatea el registro en el hilo que loguea y anula
+      `exc_info`, `exc_text` y `stack_info` antes de encolarlo. Como el QueueHandler
+      del pipeline no lleva formateador, ese formateo es el del Formatter por
+      defecto (`%(message)s`): el costo de serializar JSON sigue en el hilo del
+      listener, que es el único que escribe el archivo.
+    - Consecuencia directa: el archivo nunca contiene el árbol de la excepción. En
+      este worker secuencial la cátedra no lo exige; si se necesitara, debe
+      agregarse explícitamente y sanitizado ANTES de encolar, no después.
+    - `QueueListener.stop()` drena la cola pero no cierra los manejadores: quien
+      necesite leer el archivo inmediatamente debe cerrarlos por su cuenta.
+    - El grupo fija una única versión de Python para todos: el comportamiento de
+      `prepare()` cambia entre versiones y la revisión se hizo sobre 3.14.
+"""
 import gzip  # Comprime los históricos rotados.
 import json  # Emite una estructura por línea.
 import logging  # Usa la biblioteca estándar de observabilidad.
@@ -45,7 +60,7 @@ def gzip_name(name: str) -> str:
 
 
 def gzip_rotate(source: str, dest: str) -> None:
-    """Comprime y luego elimina el histórico original.
+    """Comprime y luego elimina el histórico original, sin publicar un .gz truncado.
 
     Args:
         source: Archivo cerrado por el manejador.
@@ -53,30 +68,46 @@ def gzip_rotate(source: str, dest: str) -> None:
     Returns:
         None.
     Raises:
-        OSError: Si falla la lectura, compresión o eliminación.
+        OSError: Si falla la lectura, compresión, reemplazo o eliminación.
     Notes:
-        Esta versión didáctica no promete publicación atómica del gzip.
+        Escribe primero en `<dest>.tmp` y publica con os.replace: un corte a mitad
+        de la compresión deja el temporal, nunca un .gz incompleto que parezca
+        válido. El original se borra recién después del reemplazo exitoso.
     """
-    with open(source, "rb") as origin, gzip.open(dest, "wb") as target:
-        shutil.copyfileobj(origin, target)  # Procesa el contenido sin leerlo entero.
+    temporal = dest + ".tmp"  # Nadie lee este nombre: es reemplazado de una vez.
+    try:
+        with open(source, "rb") as origin, gzip.open(temporal, "wb") as target:
+            shutil.copyfileobj(origin, target)  # Procesa el contenido por bloques.
+        os.replace(temporal, dest)  # Publicación atómica del histórico.
+    except OSError:  # Se retira el temporal para no acumular basura entre rotaciones.
+        if os.path.exists(temporal):
+            os.remove(temporal)
+        raise
     os.remove(source)  # Solo se borra después del cierre exitoso del gzip.
 
 
-def setup(name: str) -> tuple[logging.Logger, QueueListener]:
+def setup(name: str, *, max_bytes: int = 2 * 1024 * 1024,
+          backup_count: int = 3) -> tuple[logging.Logger, QueueListener]:
     """Inicia el pipeline JSON en un archivo exclusivo de este proceso.
 
     Args:
         name: Nombre público del componente, por ejemplo fenix-worker.
+        max_bytes: Tamaño que dispara la rotación; los valores por defecto son los
+            del apoyo entregado y no cambian el comportamiento existente.
+        backup_count: Cantidad de históricos comprimidos que se conservan.
     Returns:
         Logger y listener; el llamador debe ejecutar listener.stop en finally.
     Raises:
         OSError: Si no se puede crear logs/ o abrir el archivo.
     Side Effects:
         Inicia un hilo y abre un manejador rotativo; llamar una vez por proceso.
+    Notes:
+        Los dos parámetros son keyword-only y aditivos: existen para poder forzar la
+        rotación en una prueba sin fabricar megabytes de registro.
     """
     Path("logs").mkdir(exist_ok=True)  # Prepara una ruta local ignorada por Git.
-    sink = RotatingFileHandler(f"logs/{name}-{os.getpid()}.jsonl", maxBytes=2*1024*1024,
-                               backupCount=3, encoding="utf-8")  # Limita crecimiento.
+    sink = RotatingFileHandler(f"logs/{name}-{os.getpid()}.jsonl", maxBytes=max_bytes,
+                               backupCount=backup_count, encoding="utf-8")  # Acotado.
     sink.setFormatter(JSONFormatter())  # Toda línea mantiene el mismo contrato.
     sink.namer, sink.rotator = gzip_name, gzip_rotate  # Asocia callbacks.
     records = queue.Queue()  # Esta cola en memoria NO sustituye a SQS.
