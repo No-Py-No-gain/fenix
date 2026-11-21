@@ -13,14 +13,12 @@ def setup_demo(group: str) -> dict:
         Inventario con aliases node-01 y bucket-01 y sus IDs reales del emulador.
     Raises:
         ClientError: Si el emulador no soporta una operación o falla su ejecución.
-        NotImplementedError: Mientras falte TODO I2-C.
     Side Effects:
         Crea recursos de laboratorio etiquetados y data/inventory.json.
     Notes:
         Reutilizar por tags antes de crear y guardar IDs después de cada creación.
         Obtener una ImageId con describe_images; no copiar una AMI de AWS real.
     """
-    # TODO I2-C: validar group; localizar VPC predeterminada mediante describe_vpcs.
     # ============================================================
     # I2-C: VALIDAR EL IDENTIFICADOR DEL GRUPO
     # ============================================================
@@ -58,7 +56,7 @@ def setup_demo(group: str) -> dict:
     # Guardar el identificador de la VPC.
     vpc_id = vpcs[0]["VpcId"]
 
-        # ============================================================
+    # ============================================================
     # I2-C: BUSCAR UN SECURITY GROUP EXISTENTE
     # ============================================================
 
@@ -84,7 +82,7 @@ def setup_demo(group: str) -> dict:
 
     # Si existe, conservamos su información para verificar
     # posteriormente que pertenece a nuestro laboratorio.
-        # ============================================================
+    # ============================================================
     # I2-C: CREAR O REUTILIZAR EL SECURITY GROUP
     # ============================================================
 
@@ -193,7 +191,7 @@ def setup_demo(group: str) -> dict:
         for instancia in reserva.get("Instances", [])
     ]
 
-        # ============================================================
+    # ============================================================
     # I2-C: CREAR O REUTILIZAR LA INSTANCIA EC2
     # ============================================================
 
@@ -412,11 +410,6 @@ def setup_demo(group: str) -> dict:
     # Devolvemos el inventario para que otros componentes
     # del proyecto puedan utilizarlo.
     return inventario
-
-
-
-    raise NotImplementedError("I2-C: crear laboratorio e inventario")
-
 
 def inject_fault(alias: str) -> None:
     """Detiene el nodo o elimina una etiqueta del bucket de laboratorio.

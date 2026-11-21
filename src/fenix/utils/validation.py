@@ -13,7 +13,6 @@ def identifier(value: str) -> str:
         El identificador original válido.
     Raises:
         ValidationError: Si el tipo o el patrón no cumplen el contrato.
-        NotImplementedError: Mientras el alumno no complete TODO I1-A.
     Examples:
         identifier("grupo-01") devuelve "grupo-01"; "../ajeno" debe fallar.
     """
@@ -43,7 +42,6 @@ def ttl_seconds(value: str) -> int:
         El número entero de segundos.
     Raises:
         ValidationError: Si no es entero o está fuera de los límites.
-        NotImplementedError: Mientras no se complete TODO I1-B.
     Notes:
         La CLI traduce ValidationError a parser.error para salir con código 2.
     """
@@ -52,7 +50,7 @@ def ttl_seconds(value: str) -> int:
         raise ValidationError(
             "El TTL debe recibirse como una cadena de texto."
         )
-    # I1-B: Convertir el texto recibido a un número entero.
+    # Convertir el texto recibido a un número entero.
     try:
         ttl = int(value)
 
@@ -83,10 +81,9 @@ def utc_text(value: str) -> datetime:
         Fecha con zona UTC; por ejemplo 2026-10-22T18:00:00+00:00.
     Raises:
         ValidationError: Si falta zona, hay offset no nulo o formato inválido.
-        NotImplementedError: Mientras no se complete TODO I1-C.
     """
 
-    # I1-C: Comprobar que la fecha recibida sea texto.
+    # Comprobar que la fecha recibida sea texto.
     if not isinstance(value, str):
         raise ValidationError(
             "La fecha debe recibirse como una cadena de texto."
