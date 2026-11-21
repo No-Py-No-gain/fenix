@@ -1,4 +1,5 @@
 """Laboratorio acotado de recursos. Integrante 2 prepara, integrante 6 verifica."""
+from botocore.exceptions import ClientError
 from fenix.config.settings import client
 from fenix.utils.state import load, save
 from fenix.utils.validation import identifier
@@ -279,22 +280,86 @@ def setup_demo(group: str) -> dict:
     # ============================================================
     # I2-C: CREAR O REUTILIZAR EL BUCKET S3
     # ============================================================
+        # ============================================================
+    # I2-C: ESTADO PERSISTENTE DE CREACION S3
+    # ============================================================
 
+    # Ruta local para registrar una creación incompleta.
+    # El directorio data/ está excluido de Git.
+    pending_path = "data/demo-pending.json"
+
+    # Recuperamos el registro anterior, si existe.
+    pending = load(pending_path)
+
+    # Las etiquetas que identifican los recursos del laboratorio.
+    etiquetas_esperadas = {
+        "ManagedBy": "ppa2",
+        "Project": "fenix",
+        "GroupId": group,
+        "Owner": group,
+    }
+
+    # Un registro pendiente solo identifica una operación previa.
+    # No constituye por sí mismo una prueba de propiedad.
+    if pending and (
+        pending.get("bucket") != bucket_name
+        or pending.get("group") != group
+        or pending.get("status") not in ("intent", "created")
+    ):
+        raise RuntimeError(
+            "Existe un registro S3 pendiente incompatible. "
+            "Se requiere revisión antes de continuar."
+        )
     if bucket_existe:
 
-        # El bucket ya existe.
+        # El bucket ya existe en LocalStack.
         # Consultamos sus etiquetas para verificar la propiedad.
-        respuesta_tags = s3.get_bucket_tagging(
-            Bucket=bucket_name
-        )
+        try:
+            respuesta_tags = s3.get_bucket_tagging(
+                Bucket=bucket_name
+            )
 
-        # Convertimos las etiquetas en un diccionario.
-        tags = {
-            tag["Key"]: tag["Value"]
-            for tag in respuesta_tags.get("TagSet", [])
-        }
+            tags = {
+                tag["Key"]: tag["Value"]
+                for tag in respuesta_tags.get("TagSet", [])
+            }
 
-        # Verificamos que el bucket pertenezca al laboratorio.
+        except ClientError as error:
+
+            codigo = error.response["Error"]["Code"]
+
+            # NoSuchTagSet significa que el bucket existe,
+            # pero todavía no tiene etiquetas.
+            if codigo != "NoSuchTagSet":
+                raise
+
+            # Un registro de intención no confirma creación.
+            # Solo consideramos la recuperación cuando
+            # create_bucket() terminó y registramos ese resultado.
+            if not (
+                pending
+                and pending.get("status") == "created"
+                and pending.get("bucket") == bucket_name
+                and pending.get("group") == group
+            ):
+                raise RuntimeError(
+                    f"El bucket {bucket_name} no tiene etiquetas "
+                    "y no existe una creación confirmada. "
+                    "Se requiere revisión manual."
+                ) from error
+
+            # IMPORTANTE:
+            # El registro local no acredita por sí solo
+            # la propiedad del recurso. Antes de etiquetarlo,
+            # debemos verificar su procedencia.
+            raise RuntimeError(
+                f"El bucket {bucket_name} tiene una creación "
+                "pendiente registrada, pero falta verificar "
+                "su propiedad antes de recuperar las etiquetas."
+            ) from error
+
+        # Reutilizamos únicamente buckets correctamente
+        # identificados como recursos del laboratorio.
         if (
             tags.get("ManagedBy") != "ppa2"
             or tags.get("Project") != "fenix"
@@ -310,22 +375,80 @@ def setup_demo(group: str) -> dict:
 
         # Creamos el bucket en LocalStack.
         # Para us-east-1 no necesitamos LocationConstraint.
+                # Registramos la intención antes de crear el bucket.
+        # Si el proceso se interrumpe, sabremos que existió
+        # un intento, pero no asumiremos que fue exitoso.
+        save(
+            pending_path,
+            {
+                "bucket": bucket_name,
+                "group": group,
+                "status": "intent",
+            },
+        )
+
+        # Creamos el bucket en LocalStack.
+        # Esta operación y el etiquetado son independientes.
         s3.create_bucket(
             Bucket=bucket_name
         )
 
-        # Identificamos el propietario y el proyecto.
-        s3.put_bucket_tagging(
-            Bucket=bucket_name,
-            Tagging={
-                "TagSet": [
-                    {"Key": "ManagedBy", "Value": "ppa2"},
-                    {"Key": "Project", "Value": "fenix"},
-                    {"Key": "GroupId", "Value": group},
-                    {"Key": "Owner", "Value": group},
-                ]
+        # La API confirmó la creación.
+        # Guardamos esta información antes de etiquetar.
+        save(
+            pending_path,
+            {
+                "bucket": bucket_name,
+                "group": group,
+                "status": "created",
             },
         )
+
+        # Identificamos el propietario y el proyecto.
+        # ============================================================
+        # I2-C: RECUPERACION DE FALLOS TRANSITORIOS DE S3
+        # ============================================================
+
+        # Definimos las etiquetas que identifican al laboratorio.
+        etiquetas_esperadas = {
+            "ManagedBy": "ppa2",
+            "Project": "fenix",
+            "GroupId": group,
+            "Owner": group,
+        }
+
+        # Convertimos las etiquetas al formato solicitado por S3.
+        tagging = {
+            "TagSet": [
+                {"Key": clave, "Value": valor}
+                for clave, valor in etiquetas_esperadas.items()
+            ]
+        }
+
+        # Reintentamos solamente cuando S3 informa un error
+        # interno transitorio y el bucket acaba de ser creado.
+        max_intentos = 2
+
+        for intento in range(1, max_intentos + 1):
+            try:
+                s3.put_bucket_tagging(
+                    Bucket=bucket_name,
+                    Tagging=tagging,
+                )
+
+                # Etiquetado exitoso: finalizamos los intentos.
+                break
+
+            except ClientError as error:
+                codigo = error.response["Error"]["Code"]
+
+                # No reintentamos errores de otro tipo.
+                if codigo != "InternalError":
+                    raise
+
+                # Si falló el último intento, propagamos el error.
+                if intento == max_intentos:
+                    raise
 
 
     # ============================================================
@@ -405,7 +528,23 @@ def setup_demo(group: str) -> dict:
 
     # Guardamos únicamente los recursos cuya propiedad
     # fue verificada correctamente en LocalStack.
+        # Guardamos únicamente los recursos cuya propiedad
+    # fue verificada correctamente en LocalStack.
     save("data/inventory.json", inventario)
+
+    # ============================================================
+    # I2-C: FINALIZAR LA OPERACION PENDIENTE
+    # ============================================================
+
+    # Llegamos aquí únicamente después de verificar la propiedad
+    # de EC2 y S3 y guardar correctamente el inventario.
+    #
+    # Por lo tanto, ya no existe una operación de creación
+    # pendiente y podemos limpiar su registro.
+    #
+    # Si ocurre un error antes de este punto, conservamos
+    # el registro para no perder información del fallo.
+    save(pending_path, {})
 
     # Devolvemos el inventario para que otros componentes
     # del proyecto puedan utilizarlo.

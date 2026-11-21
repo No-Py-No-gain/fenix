@@ -118,4 +118,220 @@ def test_setup_demo_rechaza_bucket_ajeno(monkeypatch):
         setup_demo("grupo01")
 
 
-    
+def test_setup_demo_no_adopta_bucket_sin_etiquetas(monkeypatch, tmp_path):
+    """
+    I2-C: Un bucket existente sin etiquetas no demuestra propiedad.
+
+    Simulamos la respuesta NoSuchTagSet de S3.
+    El programa debe rechazar el recurso si no puede acreditar
+    que corresponde a una creación propia pendiente.
+
+    No se modifican recursos reales de LocalStack.
+    """
+    from botocore.exceptions import ClientError
+    from fenix.services import demo
+
+    # Aislamos los archivos de estado de esta prueba.
+    monkeypatch.chdir(tmp_path)
+
+    cliente_original = demo.client
+
+    class S3Simulado:
+        def list_buckets(self):
+            return {
+                "Buckets": [
+                    {"Name": "fenix-grupo01-demo"}
+                ]
+            }
+
+        def get_bucket_tagging(self, Bucket):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "NoSuchTagSet",
+                        "Message": "The TagSet does not exist",
+                    }
+                },
+                "GetBucketTagging",
+            )
+
+        def put_bucket_tagging(self, **kwargs):
+            pytest.fail(
+                "No se debe etiquetar un bucket de propiedad desconocida"
+            )
+
+    def cliente_simulado(servicio):
+        if servicio == "s3":
+            return S3Simulado()
+        return cliente_original(servicio)
+
+    monkeypatch.setattr(demo, "client", cliente_simulado)
+
+    # Aceptamos un rechazo explícito o el error NoSuchTagSet.
+    # Lo fundamental es que nunca se adopte el bucket.
+    with pytest.raises((RuntimeError, ClientError)):
+        setup_demo("grupo01")
+
+def test_setup_demo_reintenta_etiquetado_s3(monkeypatch, tmp_path):
+    """
+    I2-C: Recuperación de un fallo transitorio al etiquetar S3.
+
+    Escenario:
+    1. Fénix crea un bucket nuevo.
+    2. El primer put_bucket_tagging() falla.
+    3. El segundo intento funciona.
+    4. El bucket termina con las etiquetas esperadas.
+
+    La prueba utiliza un cliente S3 simulado y archivos
+    temporales, sin modificar el bucket real de grupo01.
+    """
+    from botocore.exceptions import ClientError
+    from fenix.services import demo
+
+    # ARRANGE: aislamos los archivos locales de esta prueba.
+    monkeypatch.chdir(tmp_path)
+
+        # ============================================================
+    # I2-C: SIMULADOR EC2 PARA AISLAR LA PRUEBA
+    # ============================================================
+
+    class EC2Simulado:
+        """
+        Simula los recursos EC2 necesarios para setup_demo().
+
+        No se conecta a LocalStack ni crea recursos reales.
+        """
+
+        def describe_vpcs(self, **kwargs):
+            return {
+                "Vpcs": [
+                    {"VpcId": "vpc-simulada", "IsDefault": True}
+                ]
+            }
+
+        def describe_security_groups(self, **kwargs):
+            return {
+                "SecurityGroups": [
+                    {
+                        "GroupId": "sg-simulado",
+                        "Tags": [
+                            {"Key": "ManagedBy", "Value": "ppa2"},
+                            {"Key": "GroupId", "Value": "grupo02"},
+                        ],
+                    }
+                ]
+            }
+
+        def describe_images(self, **kwargs):
+            return {
+                "Images": [
+                    {"ImageId": "ami-simulada"}
+                ]
+            }
+
+        def describe_instances(self, **kwargs):
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-simulada",
+                                "Tags": [
+                                    {"Key": "ManagedBy", "Value": "ppa2"},
+                                    {"Key": "Project", "Value": "fenix"},
+                                    {"Key": "GroupId", "Value": "grupo02"},
+                                    {
+                                        "Key": "Name",
+                                        "Value": "fenix-grupo02-node",
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    ec2_simulado = EC2Simulado()
+
+    class S3Simulado:
+        """Simula la creación y el etiquetado de un bucket."""
+
+        def __init__(self):
+            self.bucket_creado = False
+            self.intentos_etiquetado = 0
+            self.etiquetas = []
+
+        def list_buckets(self):
+            # Inicialmente no existe ningún bucket.
+            return {"Buckets": []}
+
+        def create_bucket(self, Bucket):
+            assert Bucket == "fenix-grupo02-demo"
+            self.bucket_creado = True
+            return {}
+
+        def put_bucket_tagging(self, Bucket, Tagging):
+            assert self.bucket_creado
+
+            self.intentos_etiquetado += 1
+
+            if self.intentos_etiquetado == 1:
+                # Simulamos un fallo transitorio de S3.
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "InternalError",
+                            "Message": "Error temporal simulado",
+                        }
+                    },
+                    "PutBucketTagging",
+                )
+
+            # El segundo intento funciona.
+            self.etiquetas = Tagging["TagSet"]
+            return {}
+
+        def get_bucket_tagging(self, Bucket):
+            return {"TagSet": self.etiquetas}
+
+    s3_simulado = S3Simulado()
+
+    def cliente_simulado(servicio):
+        """
+        Devuelve exclusivamente clientes simulados.
+
+        Ninguna llamada de esta prueba utiliza AWS ni LocalStack.
+        """
+        if servicio == "s3":
+            return s3_simulado
+
+        if servicio == "ec2":
+            return ec2_simulado
+
+        raise AssertionError(
+            f"Servicio inesperado durante la prueba: {servicio}"
+        )
+
+    monkeypatch.setattr(demo, "client", cliente_simulado)
+
+    # ACT:
+    # Ejecutamos la preparación con el S3 simulado.
+    setup_demo("grupo02")
+
+    # ASSERT:
+    # Se creó el bucket y el etiquetado se intentó dos veces.
+    assert s3_simulado.bucket_creado is True
+    assert s3_simulado.intentos_etiquetado == 2
+
+    # Comprobamos las etiquetas finales.
+    etiquetas = {
+        tag["Key"]: tag["Value"]
+        for tag in s3_simulado.etiquetas
+    }
+
+    assert etiquetas == {
+        "ManagedBy": "ppa2",
+        "Project": "fenix",
+        "GroupId": "grupo02",
+        "Owner": "grupo02",
+    }
