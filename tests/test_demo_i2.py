@@ -199,8 +199,24 @@ def test_setup_demo_reintenta_etiquetado_s3(monkeypatch, tmp_path):
         """
         Simula los recursos EC2 necesarios para setup_demo().
 
-        No se conecta a LocalStack ni crea recursos reales.
+        No se conecta a LocalStack ni crea recursos reales. Las etiquetas de la
+        instancia viven en memoria para que create_tags se comporte como el
+        emulador: reconciliar tiene que verse en el describe posterior.
         """
+
+        def __init__(self):
+            self.tags_instancia = {
+                "ManagedBy": "ppa2",
+                "Project": "fenix",
+                "GroupId": "grupo02",
+                "Name": "fenix-grupo02-node",
+            }
+
+        def create_tags(self, Resources=None, Tags=None, **kwargs):
+            """Agrega o corrige etiquetas, sin duplicar recursos."""
+            for tag in Tags or []:
+                self.tags_instancia[tag["Key"]] = tag["Value"]
+            return {}
 
         def describe_vpcs(self, **kwargs):
             return {
@@ -237,13 +253,8 @@ def test_setup_demo_reintenta_etiquetado_s3(monkeypatch, tmp_path):
                             {
                                 "InstanceId": "i-simulada",
                                 "Tags": [
-                                    {"Key": "ManagedBy", "Value": "ppa2"},
-                                    {"Key": "Project", "Value": "fenix"},
-                                    {"Key": "GroupId", "Value": "grupo02"},
-                                    {
-                                        "Key": "Name",
-                                        "Value": "fenix-grupo02-node",
-                                    },
+                                    {"Key": clave, "Value": valor}
+                                    for clave, valor in self.tags_instancia.items()
                                 ],
                             }
                         ]
