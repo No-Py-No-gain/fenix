@@ -1,6 +1,7 @@
 """Adaptador HTTP guiado. Elegir Telegram O Slack, no ambos obligatoriamente."""
 import os  # Recupera credenciales fuera del repositorio.
 import requests  # Aplica timeout explícito a cada llamada HTTP.
+from dotenv import load_dotenv  # Carga la configuración local del grupo si falta.
 from requests.exceptions import (ConnectionError as ErrorDeConexion,  # Fallos de red.
                                  RequestException as ErrorDeRequests, Timeout)
 from fenix.utils.errors import PermanentError, RetryableError
@@ -23,6 +24,28 @@ def _espera_sugerida(respuesta) -> int | None:
     except (TypeError, ValueError):
         return None
     return min(max(segundos, 0), TOPE_ESPERA)  # Nunca se espera más de lo permitido.
+
+
+def _descripcion(respuesta) -> str:
+    """Extrae la descripción pública del proveedor para el diagnóstico.
+
+    Args:
+        respuesta: Respuesta HTTP del proveedor.
+    Returns:
+        Sufijo con el texto recortado, o cadena vacía si no hay descripción útil.
+    Notes:
+        Telegram explica el rechazo en el JSON y esa frase no contiene el token:
+        es la única forma de distinguir un chat bloqueado de un bot inválido.
+        Sin ella, un 403 sólo dice "rechazado" y obliga a adivinar la configuración.
+    """
+    try:
+        cuerpo = respuesta.json()
+    except ValueError:  # Un 4xx sin JSON sigue siendo un rechazo permanente.
+        return ""
+    texto = cuerpo.get("description") if isinstance(cuerpo, dict) else None
+    if not isinstance(texto, str) or not texto:
+        return ""
+    return " - " + texto[:120]  # Recortado: no se copia la respuesta entera.
 
 
 def _telegram(texto: str) -> None:
@@ -61,7 +84,8 @@ def _telegram(texto: str) -> None:
     if estado >= 500:  # 5xx tampoco depende del mensaje.
         raise RetryableError(f"El proveedor falló temporalmente: HTTP {estado}")
     if estado >= 400:  # 400/401/403: diagnóstico de configuración, no reintento ciego.
-        raise PermanentError(f"Configuración de Telegram rechazada: HTTP {estado}")
+        raise PermanentError(f"Configuración de Telegram rechazada: HTTP {estado}"
+                             f"{_descripcion(respuesta)}")
     try:
         cuerpo = respuesta.json()  # Telegram responde JSON también en errores.
     except ValueError:  # Un 200 sin JSON no confirma nada.
@@ -87,7 +111,10 @@ def notify(text: str) -> None:
         No registrar la excepción requests original: puede contener el token en URL.
         Un aviso fallido no borra el mensaje de SQS: el worker lo conserva y la DLQ
         limita los intentos. Aquí no se repite en un bucle interno.
+        La configuración se lee del entorno y, si falta, del archivo local del grupo.
+        load_dotenv no sobrescribe lo ya exportado: el operador manda sobre el archivo.
     """
+    load_dotenv()  # Se carga acá para no depender de que otro módulo lo haya hecho.
     modo = os.getenv("NOTIFY_PROVIDER", "console").strip().lower()  # Adaptador explícito.
     if modo == "console":  # Ensayo local sin credenciales de terceros.
         print(text[:LIMITE_TEXTO])  # No imprimir eventos completos o URLs privadas.

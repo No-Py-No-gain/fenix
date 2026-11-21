@@ -69,6 +69,7 @@ def telegram(monkeypatch):
     monkeypatch.setenv("NOTIFY_PROVIDER", "telegram")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
     monkeypatch.setenv("TELEGRAM_CHAT_ID", CHAT)
+    monkeypatch.setattr(notifications, "load_dotenv", lambda *args, **kwargs: False)
 
     def instalar(respuesta=None, error: Exception | None = None) -> RequestsFalso:
         """Sustituye el módulo requests dentro del adaptador."""
@@ -81,10 +82,18 @@ def telegram(monkeypatch):
 
 def test_modo_console_no_hace_llamadas(monkeypatch, capsys):
     """El modo de desarrollo imprime y no toca la red ni exige credenciales."""
-    monkeypatch.delenv("NOTIFY_PROVIDER", raising=False)  # Default entregado.
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("NOTIFY_PROVIDER", "console")  # Modo explícito, no por defecto.
     notifications.notify(RESUMEN)
     assert capsys.readouterr().out.strip() == RESUMEN  # Sin eventos completos.
+
+
+def test_notify_carga_la_configuracion_local(monkeypatch):
+    """El adaptador no depende de que otro módulo haya cargado el archivo local."""
+    llamadas: list[bool] = []
+    monkeypatch.setenv("NOTIFY_PROVIDER", "console")
+    monkeypatch.setattr(notifications, "load_dotenv", lambda *a, **k: llamadas.append(True))
+    notifications.notify(RESUMEN)
+    assert llamadas == [True]  # Se carga exactamente una vez por aviso.
 
 
 def test_telegram_confirma_con_ok_true(telegram):
@@ -158,6 +167,16 @@ def test_sin_credenciales_no_llama_al_proveedor(telegram, monkeypatch):
     with pytest.raises(PermanentError):
         notifications.notify(RESUMEN)
     assert doble.llamadas == []  # Sin petición: el problema es de configuración.
+
+
+def test_403_incluye_el_diagnostico_del_proveedor(telegram):
+    """Un 403 permanente explica la causa sin exponer el token."""
+    telegram(RespuestaFalsa(403, {"ok": False,
+                                 "description": "Forbidden: the bot can't send messages to the bot"}))
+    with pytest.raises(PermanentError) as capturada:
+        notifications.notify(RESUMEN)
+    assert "can't send messages to the bot" in str(capturada.value)  # Causa concreta.
+    assert TOKEN not in str(capturada.value)  # Sin secreto en el diagnóstico.
 
 
 def test_proveedor_desconocido_es_error_de_configuracion(monkeypatch):
