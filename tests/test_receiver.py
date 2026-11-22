@@ -229,3 +229,77 @@ def test_sin_prefijo_de_cola_no_acepta(dobles, monkeypatch):
     respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
     assert respuesta.status_code == 503
     assert dobles["publicados"] == []
+
+
+class RegistroFalso:
+    """Doble del logger del proceso: anota nivel, mensaje y contexto público."""
+
+    def __init__(self):
+        """Empieza sin líneas registradas."""
+        self.lineas: list[tuple] = []
+
+    def _anotar(self, nivel: str, mensaje: str, extra: dict | None) -> None:
+        """Guarda una línea con la forma que produce el pipeline real."""
+        self.lineas.append((nivel, mensaje, extra or {}))
+
+    def info(self, mensaje: str, **opciones) -> None:
+        """Registra un nivel INFO."""
+        self._anotar("INFO", mensaje, opciones.get("extra"))
+
+    def warning(self, mensaje: str, **opciones) -> None:
+        """Registra un nivel WARNING."""
+        self._anotar("WARNING", mensaje, opciones.get("extra"))
+
+    def error(self, mensaje: str, **opciones) -> None:
+        """Registra un nivel ERROR."""
+        self._anotar("ERROR", mensaje, opciones.get("extra"))
+
+
+@pytest.fixture
+def registro(monkeypatch):
+    """Sustituye el logger del receptor por un doble observable.
+
+    Args:
+        monkeypatch: Fixture de pytest que restaura el módulo al terminar.
+    Returns:
+        El doble, con la lista de líneas registradas.
+    """
+    doble = RegistroFalso()
+    monkeypatch.setattr(receiver, "_logger", lambda: doble)
+    return doble
+
+
+def test_el_202_registra_event_id_y_message_id(dobles, registro):
+    """Una aceptación queda registrada con los dos identificadores correlacionados."""
+    cuerpo = cuerpo_valido()
+    CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
+    nivel, mensaje, extra = registro.lineas[-1]
+    assert (nivel, mensaje) == ("INFO", "evento_aceptado")
+    assert extra["event_id"] == EVENTO["event_id"]  # Permite cruzar con el ledger.
+    assert extra["message_id"] == "msg-0001"  # Y con la cola real.
+    assert extra["status"] == 202
+    assert extra["resource_id"] == EVENTO["resource_id"]
+
+
+def test_el_401_registra_sin_inventar_contexto(dobles, registro):
+    """Un rechazo por firma no publica un event_id que todavía no se leyó."""
+    CLIENTE.post("/webhook", content=cuerpo_valido(), headers={})
+    nivel, mensaje, extra = registro.lineas[-1]
+    assert (nivel, mensaje) == ("WARNING", "firma_invalida")
+    assert extra["status"] == 401
+    assert "event_id" not in extra  # No se inventa contexto: no se leyó el cuerpo.
+
+
+def test_el_422_registra_el_event_id_recibido(dobles, registro, monkeypatch):
+    """Un contrato inválido deja rastro del evento que sí se pudo leer."""
+    def validate_rechaza(evento, inventario):
+        """Simula la validación de I1 frente a un recurso ajeno."""
+        raise ValidationError("El recurso no pertenece al inventario autorizado")
+
+    monkeypatch.setattr(receiver, "validate", validate_rechaza)
+    cuerpo = cuerpo_valido()
+    CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
+    nivel, mensaje, extra = registro.lineas[-1]
+    assert (nivel, mensaje) == ("WARNING", "evento_invalido")
+    assert extra["event_id"] == EVENTO["event_id"]
+    assert extra["status"] == 422
