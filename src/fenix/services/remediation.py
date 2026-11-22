@@ -6,31 +6,31 @@ from fenix.services.events import validate
 from fenix.services.notifications import notify
 from fenix.utils.errors import RetryableError, PermanentError
 
-CODIGOS_TRANSITORIOS = frozenset({  # Se reintentan en la próxima recepción SQS.
+TRANSIENT_ERROR_CODES = frozenset({  # Se reintentan en la próxima recepción SQS.
     "Throttling", "ThrottlingException", "RequestLimitExceeded", "RequestThrottled",
     "SlowDown", "RequestTimeout", "RequestTimeoutException", "ServiceUnavailable",
     "InternalError", "InternalFailure", "PriorRequestNotComplete"})
-ESTADOS_TERMINALES = frozenset({"stopping", "shutting-down", "terminated"})  # Sin vuelta.
+TERMINAL_STATES = frozenset({"stopping", "shutting-down", "terminated"})  # Sin vuelta.
 
 
-def _traducir(error: ClientError, contexto: str) -> RetryableError | PermanentError:
+def _translate_client_error(error: ClientError, service: str) -> RetryableError | PermanentError:
     """Clasifica un ClientError por código y estado HTTP, nunca por intuición.
 
     Args:
         error: Excepción devuelta por Boto3.
-        contexto: Nombre público del servicio; nunca incluye URLs ni credenciales.
+        service: Nombre público del servicio; nunca incluye URLs ni credenciales.
     Returns:
         RetryableError si la falla puede desaparecer; PermanentError si no.
     """
-    respuesta = getattr(error, "response", None) or {}  # Algunos dobles no la traen.
-    codigo = respuesta.get("Error", {}).get("Code", "desconocido")  # Código simbólico.
-    estado = respuesta.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0
-    if codigo in CODIGOS_TRANSITORIOS or estado >= 500:  # 5xx nunca es culpa del evento.
-        return RetryableError(f"{contexto} no disponible: {codigo}")  # Se reintenta.
-    return PermanentError(f"{contexto} rechazó la operación: {codigo}")  # Mensaje venenoso.
+    response = getattr(error, "response", None) or {}  # Algunos dobles no la traen.
+    code = response.get("Error", {}).get("Code", "desconocido")  # Código simbólico.
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0
+    if code in TRANSIENT_ERROR_CODES or status >= 500:  # 5xx nunca es culpa del evento.
+        return RetryableError(f"{service} no disponible: {code}")  # Se reintenta.
+    return PermanentError(f"{service} rechazó la operación: {code}")  # Mensaje venenoso.
 
 
-def _estado_instancia(ec2, instance_id: str) -> str:
+def _instance_state(ec2, instance_id: str) -> str:
     """Lee el estado real de la instancia, sin suponerlo desde el evento.
 
     Args:
@@ -41,15 +41,15 @@ def _estado_instancia(ec2, instance_id: str) -> str:
     Raises:
         PermanentError: Si el identificador no corresponde a ninguna instancia.
     """
-    respuesta = ec2.describe_instances(InstanceIds=[instance_id])
-    instancias = [instancia for reserva in respuesta.get("Reservations") or []
-                  for instancia in reserva.get("Instances") or []]
-    if not instancias:  # Un ID del inventario sin recurso no se reemplaza por otro.
+    response = ec2.describe_instances(InstanceIds=[instance_id])
+    instances = [instance for reservation in response.get("Reservations") or []
+                 for instance in reservation.get("Instances") or []]
+    if not instances:  # Un ID del inventario sin recurso no se reemplaza por otro.
         raise PermanentError("La instancia del inventario ya no existe en el emulador")
-    return instancias[0].get("State", {}).get("Name", "")
+    return instances[0].get("State", {}).get("Name", "")
 
 
-def _etiquetas_actuales(s3, bucket: str) -> dict[str, str]:
+def _current_tags(s3, bucket: str) -> dict[str, str]:
     """Lee las etiquetas del bucket distinguiendo vacío de error.
 
     Args:
@@ -61,15 +61,15 @@ def _etiquetas_actuales(s3, bucket: str) -> dict[str, str]:
         ClientError: Cualquier otro fallo, para que el llamador lo clasifique.
     """
     try:
-        respuesta = s3.get_bucket_tagging(Bucket=bucket)
+        response = s3.get_bucket_tagging(Bucket=bucket)
     except ClientError as error:  # Solo este código significa "sin etiquetas".
         if error.response.get("Error", {}).get("Code") == "NoSuchTagSet":
             return {}
         raise  # NoSuchBucket, AccessDenied o throttling no se adivinan: se clasifican.
-    return {etiqueta["Key"]: etiqueta["Value"] for etiqueta in respuesta.get("TagSet", [])}
+    return {tag["Key"]: tag["Value"] for tag in response.get("TagSet", [])}
 
 
-def _reparar_instancia(resource: dict) -> str:
+def _repair_instance(resource: dict) -> str:
     """Lleva una instancia EC2 mock a running y verifica el resultado.
 
     Args:
@@ -82,21 +82,21 @@ def _reparar_instancia(resource: dict) -> str:
     """
     ec2 = client("ec2")
     instance_id = resource["id"]  # Viene del inventario, nunca del evento.
-    estado = _estado_instancia(ec2, instance_id)
-    if estado == "running":  # Convergencia: repetir el evento no vuelve a arrancar.
+    status = _instance_state(ec2, instance_id)
+    if status == "running":  # Convergencia: repetir el evento no vuelve a arrancar.
         return "already_ok"
-    if estado in ESTADOS_TERMINALES:  # Ni start ni reboot devuelven de aquí.
-        raise PermanentError(f"La instancia quedó en estado terminal: {estado}")
-    if estado != "stopped":  # pending u otro intermedio: se reintenta, no se espera.
-        raise RetryableError(f"La instancia no está lista para arrancar: {estado}")
+    if status in TERMINAL_STATES:  # Ni start ni reboot devuelven de aquí.
+        raise PermanentError(f"La instancia quedó en estado terminal: {status}")
+    if status != "stopped":  # pending u otro intermedio: se reintenta, no se espera.
+        raise RetryableError(f"La instancia no está lista para arrancar: {status}")
     ec2.start_instances(InstanceIds=[instance_id])  # Idempotente sólo si el estado lo es.
-    estado = _estado_instancia(ec2, instance_id)  # Se verifica, no se supone.
-    if estado == "running":
+    status = _instance_state(ec2, instance_id)  # Se verifica, no se supone.
+    if status == "running":
         return "repaired"
-    raise RetryableError(f"El arranque no se observó completo: {estado}")
+    raise RetryableError(f"El arranque no se observó completo: {status}")
 
 
-def _reparar_etiquetas(resource: dict) -> str:
+def _repair_tags(resource: dict) -> str:
     """Restaura las etiquetas obligatorias de un bucket preservando las ajenas.
 
     Args:
@@ -109,17 +109,17 @@ def _reparar_etiquetas(resource: dict) -> str:
     """
     s3 = client("s3")
     bucket = resource["id"]  # Nombre propio del grupo, no un nombre elegido por el emisor.
-    esperadas = dict(resource.get("expected_tags") or {})  # Política mínima obligatoria.
-    if not esperadas:  # Sin política declarada no se puede verificar el estado deseado.
+    expected = dict(resource.get("expected_tags") or {})  # Política mínima obligatoria.
+    if not expected:  # Sin política declarada no se puede verificar el estado deseado.
         raise PermanentError("El inventario no declara expected_tags para este recurso")
-    actuales = _etiquetas_actuales(s3, bucket)
-    if all(actuales.get(clave) == valor for clave, valor in esperadas.items()):
+    current = _current_tags(s3, bucket)
+    if all(current.get(key) == value for key, value in expected.items()):
         return "already_ok"  # Ya converge: no se reescribe ni se notifica de nuevo.
-    combinadas = {**actuales, **esperadas}  # Las ajenas sobreviven a la mezcla.
+    merged = {**current, **expected}  # Las ajenas sobreviven a la mezcla.
     s3.put_bucket_tagging(Bucket=bucket, Tagging={"TagSet": [
-        {"Key": clave, "Value": valor} for clave, valor in combinadas.items()]})
-    verificadas = _etiquetas_actuales(s3, bucket)  # Lectura de confirmación.
-    if all(verificadas.get(clave) == valor for clave, valor in esperadas.items()):
+        {"Key": key, "Value": value} for key, value in merged.items()]})
+    verified = _current_tags(s3, bucket)  # Lectura de confirmación.
+    if all(verified.get(key) == value for key, value in expected.items()):
         return "repaired"
     raise RetryableError("Las etiquetas restauradas no se observan tras la escritura")
 
@@ -149,16 +149,16 @@ def repair(resource: dict, event_type: str) -> str:
         recurso sin nada que hacer: devolver "already_ok" ahí sería declarar éxito
         sin haber verificado nada.
     """
-    tipo = resource.get("type")  # El par evento/recurso no se adivina.
+    resource_type = resource.get("type")  # El par evento/recurso no se adivina.
     if not resource.get("id"):  # Sin identificador no hay nada que verificar.
         raise PermanentError("El inventario no declara el identificador del recurso")
     try:  # Un único punto de traducción de errores del SDK.
-        if event_type == "instance.stopped" and tipo == "ec2":
-            return _reparar_instancia(resource)
-        if event_type == "bucket.tags_missing" and tipo == "s3":
-            return _reparar_etiquetas(resource)
+        if event_type == "instance.stopped" and resource_type == "ec2":
+            return _repair_instance(resource)
+        if event_type == "bucket.tags_missing" and resource_type == "s3":
+            return _repair_tags(resource)
     except ClientError as error:  # Throttling, 5xx, permisos y recursos ausentes.
-        raise _traducir(error, "La API del emulador") from error
+        raise _translate_client_error(error, "La API del emulador") from error
     except BotoCoreError as error:  # Emulador apagado o endpoint inalcanzable.
         raise RetryableError("El emulador no responde") from error
     raise PermanentError("El evento no corresponde al tipo de recurso inventariado")

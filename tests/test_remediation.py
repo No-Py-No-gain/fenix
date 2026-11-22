@@ -8,95 +8,95 @@ from botocore.exceptions import ClientError, EndpointConnectionError  # Fallos d
 from fenix.services import remediation  # Módulo del rol I3.
 from fenix.utils.errors import PermanentError, RetryableError  # Clasificación exigida.
 
-INSTANCIA = {"type": "ec2", "id": "i-0001", "security_group_id": "sg-0001",
-             "expected_tags": {"ManagedBy": "ppa2", "Project": "fenix"}}
+INSTANCE = {"type": "ec2", "id": "i-0001", "security_group_id": "sg-0001",
+            "expected_tags": {"ManagedBy": "ppa2", "Project": "fenix"}}
 BUCKET = {"type": "s3", "id": "bucket-01-grupo01",
           "expected_tags": {"ManagedBy": "ppa2", "Project": "fenix",
                             "GroupId": "grupo01", "Owner": "grupo01"}}
 
 
-def error_cliente(codigo: str, estado: int) -> ClientError:
+def client_error(code: str, status: int) -> ClientError:
     """Construye un ClientError con el código y el estado HTTP indicados.
 
     Args:
-        codigo: Código simbólico que devuelve el SDK, por ejemplo Throttling.
-        estado: Código HTTP asociado a la respuesta.
+        code: Código simbólico que devuelve el SDK, por ejemplo Throttling.
+        status: Código HTTP asociado a la respuesta.
     Returns:
         Excepción lista para lanzar desde un doble.
     """
-    return ClientError({"Error": {"Code": codigo, "Message": "detalle interno"},
-                        "ResponseMetadata": {"HTTPStatusCode": estado}}, "Operacion")
+    return ClientError({"Error": {"Code": code, "Message": "detalle interno"},
+                        "ResponseMetadata": {"HTTPStatusCode": status}}, "Operacion")
 
 
-class EC2Falso:
+class FakeEC2:
     """Doble de cliente EC2 que devuelve una secuencia de estados observados."""
 
-    def __init__(self, estados: list[str]):
+    def __init__(self, states: list[str]):
         """Guarda los estados que devolverá describe_instances en orden.
 
         Args:
-            estados: Secuencia de estados; el último se repite si se consulta más.
+            states: Secuencia de estados; el último se repite si se consulta más.
         """
-        self.estados = list(estados)
-        self.arranques: list[list[str]] = []
-        self.error_arranque: Exception | None = None
-        self.sin_instancias = False
+        self.states = list(states)
+        self.starts: list[list[str]] = []
+        self.start_error: Exception | None = None
+        self.no_instances = False
 
     def describe_instances(self, InstanceIds: list[str]) -> dict:
         """Devuelve el estado actual simulado de la instancia."""
-        if self.sin_instancias:  # Recurso borrado por fuera del inventario.
+        if self.no_instances:  # Recurso borrado por fuera del inventario.
             return {"Reservations": []}
-        actual = self.estados.pop(0) if len(self.estados) > 1 else self.estados[0]
-        return {"Reservations": [{"Instances": [{"State": {"Name": actual}}]}]}
+        current = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return {"Reservations": [{"Instances": [{"State": {"Name": current}}]}]}
 
     def start_instances(self, InstanceIds: list[str]) -> dict:
         """Registra el arranque o lanza el error configurado."""
-        if self.error_arranque is not None:
-            raise self.error_arranque
-        self.arranques.append(list(InstanceIds))
+        if self.start_error is not None:
+            raise self.start_error
+        self.starts.append(list(InstanceIds))
         return {"StartingInstances": [{"InstanceId": InstanceIds[0]}]}
 
 
-class S3Falso:
+class FakeS3:
     """Doble de cliente S3 con etiquetas en memoria."""
 
-    def __init__(self, etiquetas: dict | None = None, error_lectura: Exception | None = None,
-                 error_escritura: Exception | None = None, ignora_escritura: bool = False):
+    def __init__(self, tags: dict | None = None, read_error: Exception | None = None,
+                 write_error: Exception | None = None, ignore_writes: bool = False):
         """Configura el estado inicial y los fallos que debe simular.
 
         Args:
-            etiquetas: Etiquetas actuales del bucket; None representa NoSuchTagSet.
-            error_lectura: Excepción que lanzará get_bucket_tagging.
-            error_escritura: Excepción que lanzará put_bucket_tagging.
-            ignora_escritura: Si es True, la escritura no modifica el estado.
+            tags: Etiquetas actuales del bucket; None representa NoSuchTagSet.
+            read_error: Excepción que lanzará get_bucket_tagging.
+            write_error: Excepción que lanzará put_bucket_tagging.
+            ignore_writes: Si es True, la escritura no modifica el estado.
         """
-        self.etiquetas = dict(etiquetas) if etiquetas is not None else None
-        self.error_lectura = error_lectura
-        self.error_escritura = error_escritura
-        self.ignora_escritura = ignora_escritura
-        self.escrituras: list[dict] = []
+        self.tags = dict(tags) if tags is not None else None
+        self.read_error = read_error
+        self.write_error = write_error
+        self.ignore_writes = ignore_writes
+        self.writes: list[dict] = []
 
     def get_bucket_tagging(self, Bucket: str) -> dict:
         """Devuelve las etiquetas o lanza el error configurado."""
-        if self.error_lectura is not None:
-            raise self.error_lectura
-        if not self.etiquetas:  # Solo este código significa "bucket sin etiquetas".
-            raise error_cliente("NoSuchTagSet", 404)
-        return {"TagSet": [{"Key": k, "Value": v} for k, v in self.etiquetas.items()]}
+        if self.read_error is not None:
+            raise self.read_error
+        if not self.tags:  # Solo este código significa "bucket sin etiquetas".
+            raise client_error("NoSuchTagSet", 404)
+        return {"TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]}
 
     def put_bucket_tagging(self, Bucket: str, Tagging: dict) -> dict:
         """Registra la escritura y actualiza el estado salvo que se ignore."""
-        if self.error_escritura is not None:
-            raise self.error_escritura
-        combinadas = {t["Key"]: t["Value"] for t in Tagging["TagSet"]}
-        self.escrituras.append(combinadas)
-        if not self.ignora_escritura:
-            self.etiquetas = combinadas
+        if self.write_error is not None:
+            raise self.write_error
+        merged = {t["Key"]: t["Value"] for t in Tagging["TagSet"]}
+        self.writes.append(merged)
+        if not self.ignore_writes:
+            self.tags = merged
         return {}
 
 
 @pytest.fixture
-def emulador(monkeypatch):
+def emulator(monkeypatch):
     """Devuelve una función para instalar el doble de cliente del servicio pedido.
 
     Args:
@@ -104,61 +104,61 @@ def emulador(monkeypatch):
     Returns:
         Función que recibe un doble y lo publica como cliente de Boto3.
     """
-    def instalar(doble):
+    def install(fake):
         """Sustituye settings.client dentro del módulo de reparación."""
-        monkeypatch.setattr(remediation, "client", lambda servicio: doble)
-        return doble
-    return instalar
+        monkeypatch.setattr(remediation, "client", lambda service: fake)
+        return fake
+    return install
 
 
-def test_instancia_ya_en_running_no_se_repara(emulador):
+def test_instance_already_running_is_not_repaired(emulator):
     """Una instancia que ya cumple la política no recibe ninguna acción."""
-    ec2 = emulador(EC2Falso(["running"]))
-    assert remediation.repair(INSTANCIA, "instance.stopped") == "already_ok"
-    assert ec2.arranques == []  # Repetir el evento no puede volver a arrancar.
+    ec2 = emulator(FakeEC2(["running"]))
+    assert remediation.repair(INSTANCE, "instance.stopped") == "already_ok"
+    assert ec2.starts == []  # Repetir el evento no puede volver a arrancar.
 
 
-def test_instancia_detenida_arranca_y_verifica(emulador):
+def test_stopped_instance_starts_and_verifies(emulator):
     """Convergencia: stopped pasa a running y se comprueba leyendo el estado real."""
-    ec2 = emulador(EC2Falso(["stopped", "running"]))
-    assert remediation.repair(INSTANCIA, "instance.stopped") == "repaired"
-    assert ec2.arranques == [["i-0001"]]  # Un solo arranque, sobre el ID inventariado.
+    ec2 = emulator(FakeEC2(["stopped", "running"]))
+    assert remediation.repair(INSTANCE, "instance.stopped") == "repaired"
+    assert ec2.starts == [["i-0001"]]  # Un solo arranque, sobre el ID inventariado.
 
 
-def test_instancia_en_pending_pide_otra_recepcion(emulador):
+def test_pending_instance_asks_for_another_receipt(emulator):
     """Un arranque en curso no se espera dentro del mismo mensaje."""
-    ec2 = emulador(EC2Falso(["pending"]))
+    ec2 = emulator(FakeEC2(["pending"]))
     with pytest.raises(RetryableError):
-        remediation.repair(INSTANCIA, "instance.stopped")
-    assert ec2.arranques == []  # No se fuerza nada mientras el estado es incierto.
+        remediation.repair(INSTANCE, "instance.stopped")
+    assert ec2.starts == []  # No se fuerza nada mientras el estado es incierto.
 
 
-def test_instancia_que_no_llega_a_running_pide_reintento(emulador):
+def test_instance_that_never_reaches_running_asks_for_retry(emulator):
     """Si tras arrancar el estado sigue sin ser running, la reparación no se da por hecha."""
-    emulador(EC2Falso(["stopped", "pending"]))
+    emulator(FakeEC2(["stopped", "pending"]))
     with pytest.raises(RetryableError):
-        remediation.repair(INSTANCIA, "instance.stopped")
+        remediation.repair(INSTANCE, "instance.stopped")
 
 
-@pytest.mark.parametrize("estado", ["terminated", "shutting-down", "stopping"])
-def test_estado_terminal_es_falla_permanente(emulador, estado):
+@pytest.mark.parametrize("state", ["terminated", "shutting-down", "stopping"])
+def test_terminal_state_is_permanent_failure(emulator, state):
     """Un estado del que no se vuelve no se reintenta: se explica y se descarta."""
-    emulador(EC2Falso([estado]))
+    emulator(FakeEC2([state]))
     with pytest.raises(PermanentError):
-        remediation.repair(INSTANCIA, "instance.stopped")
+        remediation.repair(INSTANCE, "instance.stopped")
 
 
-def test_instancia_inexistente_es_falla_permanente(emulador):
+def test_missing_instance_is_permanent_failure(emulator):
     """El inventario apunta a un recurso que ya no existe: no se adopta otro."""
-    doble = EC2Falso(["running"])
-    doble.sin_instancias = True
-    emulador(doble)
+    fake = FakeEC2(["running"])
+    fake.no_instances = True
+    emulator(fake)
     with pytest.raises(PermanentError):
-        remediation.repair(INSTANCIA, "instance.stopped")
+        remediation.repair(INSTANCE, "instance.stopped")
 
 
 @pytest.mark.parametrize(
-    "codigo, estado, esperada",
+    "code, status, expected",
     [
         ("Throttling", 400, RetryableError),  # Limitación temporal del emulador.
         ("RequestLimitExceeded", 400, RetryableError),
@@ -168,93 +168,93 @@ def test_instancia_inexistente_es_falla_permanente(emulador):
         ("InvalidInstanceID.NotFound", 400, PermanentError),
     ],
 )
-def test_clienterror_se_clasifica_por_codigo(emulador, codigo, estado, esperada):
+def test_client_error_is_classified_by_code(emulator, code, status, expected):
     """No todo ClientError es transitorio: se mira el código y el estado HTTP."""
-    doble = EC2Falso(["stopped"])
-    doble.error_arranque = error_cliente(codigo, estado)
-    emulador(doble)
-    with pytest.raises(esperada):
-        remediation.repair(INSTANCIA, "instance.stopped")
+    fake = FakeEC2(["stopped"])
+    fake.start_error = client_error(code, status)
+    emulator(fake)
+    with pytest.raises(expected):
+        remediation.repair(INSTANCE, "instance.stopped")
 
 
-def test_emulador_apagado_es_falla_transitoria(emulador):
+def test_emulator_down_is_retryable(emulator):
     """LocalStack caído se reintenta después: no es un mensaje venenoso."""
-    doble = EC2Falso(["stopped"])
-    doble.error_arranque = EndpointConnectionError(endpoint_url="http://localhost:4566")
-    emulador(doble)
+    fake = FakeEC2(["stopped"])
+    fake.start_error = EndpointConnectionError(endpoint_url="http://localhost:4566")
+    emulator(fake)
     with pytest.raises(RetryableError):
-        remediation.repair(INSTANCIA, "instance.stopped")
+        remediation.repair(INSTANCE, "instance.stopped")
 
 
-def test_f03_bucket_sin_etiquetas_las_restaura(emulador):
+def test_f03_bucket_without_tags_restores_them(emulator):
     """F03: un bucket sin etiquetas recupera las obligatorias del inventario."""
-    s3 = emulador(S3Falso(etiquetas=None))
+    s3 = emulator(FakeS3(tags=None))
     assert remediation.repair(BUCKET, "bucket.tags_missing") == "repaired"
-    assert s3.etiquetas == BUCKET["expected_tags"]
+    assert s3.tags == BUCKET["expected_tags"]
 
 
-def test_f03_preserva_etiquetas_ajenas(emulador):
+def test_f03_preserves_foreign_tags(emulator):
     """F03: la mezcla restaura Owner sin borrar una etiqueta que no es de la política."""
-    s3 = emulador(S3Falso(etiquetas={"ManagedBy": "ppa2", "Project": "fenix",
-                                     "GroupId": "grupo01", "Ajeno": "conservar"}))
+    s3 = emulator(FakeS3(tags={"ManagedBy": "ppa2", "Project": "fenix",
+                               "GroupId": "grupo01", "Ajeno": "conservar"}))
     assert remediation.repair(BUCKET, "bucket.tags_missing") == "repaired"
-    assert s3.etiquetas["Owner"] == "grupo01"  # La faltante se agregó.
-    assert s3.etiquetas["Ajeno"] == "conservar"  # La ajena sobrevivió intacta.
+    assert s3.tags["Owner"] == "grupo01"  # La faltante se agregó.
+    assert s3.tags["Ajeno"] == "conservar"  # La ajena sobrevivió intacta.
 
 
-def test_bucket_completo_no_se_reescribe(emulador):
+def test_complete_bucket_is_not_rewritten(emulator):
     """Con todas las etiquetas correctas no hay escritura: idempotencia real."""
-    s3 = emulador(S3Falso(etiquetas=dict(BUCKET["expected_tags"])))
+    s3 = emulator(FakeS3(tags=dict(BUCKET["expected_tags"])))
     assert remediation.repair(BUCKET, "bucket.tags_missing") == "already_ok"
-    assert s3.escrituras == []
+    assert s3.writes == []
 
 
-def test_etiqueta_con_valor_distinto_se_corrige(emulador):
+def test_tag_with_different_value_is_corrected(emulator):
     """Una etiqueta obligatoria con el valor equivocado se reemplaza, no se duplica."""
-    etiquetas = dict(BUCKET["expected_tags"])
-    etiquetas["Owner"] = "otro-grupo"
-    s3 = emulador(S3Falso(etiquetas=etiquetas))
+    tags = dict(BUCKET["expected_tags"])
+    tags["Owner"] = "otro-grupo"
+    s3 = emulator(FakeS3(tags=tags))
     assert remediation.repair(BUCKET, "bucket.tags_missing") == "repaired"
-    assert s3.etiquetas["Owner"] == "grupo01"
+    assert s3.tags["Owner"] == "grupo01"
 
 
-def test_bucket_inexistente_no_se_confunde_con_sin_etiquetas(emulador):
+def test_missing_bucket_is_not_confused_with_missing_tags(emulator):
     """Solo NoSuchTagSet equivale a cero etiquetas; otro error no se adivina."""
-    emulador(S3Falso(error_lectura=error_cliente("NoSuchBucket", 404)))
+    emulator(FakeS3(read_error=client_error("NoSuchBucket", 404)))
     with pytest.raises(PermanentError):
         remediation.repair(BUCKET, "bucket.tags_missing")
 
 
-def test_lectura_con_throttling_es_transitoria(emulador):
+def test_read_with_throttling_is_retryable(emulator):
     """Un NoSuchTagSet leído bajo throttling no se interpreta como bucket vacío."""
-    emulador(S3Falso(error_lectura=error_cliente("Throttling", 400)))
+    emulator(FakeS3(read_error=client_error("Throttling", 400)))
     with pytest.raises(RetryableError):
         remediation.repair(BUCKET, "bucket.tags_missing")
 
 
-def test_escritura_que_no_se_observa_pide_reintento(emulador):
+def test_write_not_observed_asks_for_retry(emulator):
     """Si tras escribir el SDK las etiquetas no se leen, la etapa no está verificada."""
-    emulador(S3Falso(etiquetas=None, ignora_escritura=True))
+    emulator(FakeS3(tags=None, ignore_writes=True))
     with pytest.raises(RetryableError):
         remediation.repair(BUCKET, "bucket.tags_missing")
 
 
-def test_inventario_sin_expected_tags_no_se_da_por_reparado(emulador):
+def test_inventory_without_expected_tags_is_not_marked_repaired(emulator):
     """Sin política declarada no hay estado deseado: no se puede declarar already_ok.
 
     Un inventario que no guarda `expected_tags` (§3.3) haría que la comparación con
     una política vacía diera siempre verdadera y el bucket quedara "correcto" sin
     haber verificado nada. Es un fallo permanente, no un éxito silencioso.
     """
-    s3 = emulador(S3Falso(etiquetas={"ManagedBy": "ppa2"}))
+    s3 = emulator(FakeS3(tags={"ManagedBy": "ppa2"}))
     with pytest.raises(PermanentError):
         remediation.repair({"type": "s3", "id": "bucket-01"}, "bucket.tags_missing")
-    assert s3.escrituras == []  # Tampoco se escribe a ciegas.
+    assert s3.writes == []  # Tampoco se escribe a ciegas.
 
 
-def test_recurso_sin_identificador_se_rechaza(emulador):
+def test_resource_without_identifier_is_rejected(emulator):
     """Un registro de inventario sin id no se resuelve con un valor por defecto."""
-    emulador(EC2Falso(["running"]))
+    emulator(FakeEC2(["running"]))
     with pytest.raises(PermanentError):
         remediation.repair({"type": "ec2"}, "instance.stopped")
 
@@ -262,13 +262,13 @@ def test_recurso_sin_identificador_se_rechaza(emulador):
 @pytest.mark.parametrize(
     "resource, event_type",
     [
-        (INSTANCIA, "bucket.tags_missing"),  # Evento S3 sobre un recurso EC2.
+        (INSTANCE, "bucket.tags_missing"),  # Evento S3 sobre un recurso EC2.
         (BUCKET, "instance.stopped"),  # Evento EC2 sobre un bucket.
-        (INSTANCIA, "instance.rebooted"),  # Tipo que el contrato no admite.
+        (INSTANCE, "instance.rebooted"),  # Tipo que el contrato no admite.
     ],
 )
-def test_evento_y_recurso_incompatibles_se_rechazan(emulador, resource, event_type):
+def test_incompatible_event_and_resource_are_rejected(emulator, resource, event_type):
     """La reparación no adivina: un par incompatible es falla permanente."""
-    emulador(EC2Falso(["running"]))
+    emulator(FakeEC2(["running"]))
     with pytest.raises(PermanentError):
         remediation.repair(resource, event_type)

@@ -9,52 +9,52 @@ from fenix.utils.errors import PermanentError, RetryableError  # Clasificación 
 
 TOKEN = "123456:token-ficticio-solo-test"  # Fixture pública, no abre ningún bot real.
 CHAT = "999999"  # chat_id autorizado del grupo de pruebas.
-RESUMEN = "servicio restaurado"  # Texto público sin secretos ni cuerpos HTTP.
+SUMMARY = "servicio restaurado"  # Texto público sin secretos ni cuerpos HTTP.
 
 
-class RespuestaFalsa:
+class FakeResponse:
     """Doble de respuesta HTTP con estado, cuerpo JSON y cabeceras controlables."""
 
-    def __init__(self, estado: int = 200, cuerpo=None, cabeceras: dict | None = None):
+    def __init__(self, status: int = 200, payload=None, headers: dict | None = None):
         """Configura la respuesta que verá el adaptador.
 
         Args:
-            estado: Código HTTP devuelto.
-            cuerpo: Diccionario del cuerpo JSON, o excepción si el cuerpo es ilegible.
-            cabeceras: Cabeceras de la respuesta, por ejemplo Retry-After.
+            status: Código HTTP devuelto.
+            payload: Diccionario del cuerpo JSON, o excepción si el cuerpo es ilegible.
+            headers: Cabeceras de la respuesta, por ejemplo Retry-After.
         """
-        self.status_code = estado
-        self.cuerpo = cuerpo
-        self.headers = cabeceras or {}
-        self.text = "" if cuerpo is None else str(cuerpo)
+        self.status_code = status
+        self.payload = payload
+        self.headers = headers or {}
+        self.text = "" if payload is None else str(payload)
 
     def json(self):
         """Devuelve el cuerpo o lanza el error de decodificación configurado."""
-        if isinstance(self.cuerpo, Exception):
-            raise self.cuerpo
-        return self.cuerpo
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return self.payload
 
 
-class RequestsFalso:
+class FakeRequests:
     """Doble del módulo requests que registra la llamada y lanza lo configurado."""
 
-    def __init__(self, respuesta=None, error: Exception | None = None):
+    def __init__(self, response=None, error: Exception | None = None):
         """Guarda la respuesta o el error que devolverá post.
 
         Args:
-            respuesta: RespuestaFalsa a devolver.
+            response: FakeResponse a devolver.
             error: Excepción a lanzar en lugar de responder.
         """
-        self.respuesta = respuesta
+        self.response = response
         self.error = error
-        self.llamadas: list[dict] = []
+        self.calls: list[dict] = []
 
-    def post(self, url: str, **opciones) -> RespuestaFalsa:
+    def post(self, url: str, **options) -> FakeResponse:
         """Registra la petición y devuelve la respuesta o lanza el error."""
-        self.llamadas.append({"url": url, **opciones})
+        self.calls.append({"url": url, **options})
         if self.error is not None:
             raise self.error
-        return self.respuesta
+        return self.response
 
 
 @pytest.fixture
@@ -64,130 +64,130 @@ def telegram(monkeypatch):
     Args:
         monkeypatch: Fixture de pytest que restaura el entorno al terminar.
     Returns:
-        Función que instala un RequestsFalso y lo devuelve.
+        Función que instala un FakeRequests y lo devuelve.
     """
     monkeypatch.setenv("NOTIFY_PROVIDER", "telegram")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
     monkeypatch.setenv("TELEGRAM_CHAT_ID", CHAT)
     monkeypatch.setattr(notifications, "load_dotenv", lambda *args, **kwargs: False)
 
-    def instalar(respuesta=None, error: Exception | None = None) -> RequestsFalso:
+    def install(response=None, error: Exception | None = None) -> FakeRequests:
         """Sustituye el módulo requests dentro del adaptador."""
-        doble = RequestsFalso(respuesta, error)
-        monkeypatch.setattr(notifications, "requests", doble)
-        return doble
+        fake = FakeRequests(response, error)
+        monkeypatch.setattr(notifications, "requests", fake)
+        return fake
 
-    return instalar
+    return install
 
 
-def test_modo_console_no_hace_llamadas(monkeypatch, capsys):
+def test_console_mode_makes_no_calls(monkeypatch, capsys):
     """El modo de desarrollo imprime y no toca la red ni exige credenciales."""
     monkeypatch.setenv("NOTIFY_PROVIDER", "console")  # Modo explícito, no por defecto.
-    notifications.notify(RESUMEN)
-    assert capsys.readouterr().out.strip() == RESUMEN  # Sin eventos completos.
+    notifications.notify(SUMMARY)
+    assert capsys.readouterr().out.strip() == SUMMARY  # Sin eventos completos.
 
 
-def test_notify_carga_la_configuracion_local(monkeypatch):
+def test_notify_loads_local_configuration(monkeypatch):
     """El adaptador no depende de que otro módulo haya cargado el archivo local."""
-    llamadas: list[bool] = []
+    calls: list[bool] = []
     monkeypatch.setenv("NOTIFY_PROVIDER", "console")
-    monkeypatch.setattr(notifications, "load_dotenv", lambda *a, **k: llamadas.append(True))
-    notifications.notify(RESUMEN)
-    assert llamadas == [True]  # Se carga exactamente una vez por aviso.
+    monkeypatch.setattr(notifications, "load_dotenv", lambda *a, **k: calls.append(True))
+    notifications.notify(SUMMARY)
+    assert calls == [True]  # Se carga exactamente una vez por aviso.
 
 
-def test_telegram_confirma_con_ok_true(telegram):
+def test_telegram_confirms_with_ok_true(telegram):
     """Un 200 con ok=true es la única confirmación válida del proveedor."""
-    doble = telegram(RespuestaFalsa(200, {"ok": True}))
-    notifications.notify(RESUMEN)
-    assert len(doble.llamadas) == 1
-    llamada = doble.llamadas[0]
-    assert llamada["url"].endswith("/sendMessage")  # Endpoint de sendMessage.
-    assert llamada["url"].startswith("https://api.telegram.org/bot")  # Host del proveedor.
-    assert llamada["json"] == {"chat_id": CHAT, "text": RESUMEN}  # Sin parse_mode.
-    assert llamada["timeout"] == (2, 5)  # Conexión y lectura acotadas por el contrato.
+    fake = telegram(FakeResponse(200, {"ok": True}))
+    notifications.notify(SUMMARY)
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["url"].endswith("/sendMessage")  # Endpoint de sendMessage.
+    assert call["url"].startswith("https://api.telegram.org/bot")  # Host del proveedor.
+    assert call["json"] == {"chat_id": CHAT, "text": SUMMARY}  # Sin parse_mode.
+    assert call["timeout"] == (2, 5)  # Conexión y lectura acotadas por el contrato.
 
 
-def test_telegram_200_con_ok_false_es_falla_permanente(telegram):
+def test_telegram_200_with_ok_false_is_permanent_failure(telegram):
     """Un HTTP 200 no basta: si el JSON dice ok=false se rechaza como permanente."""
-    telegram(RespuestaFalsa(200, {"ok": False, "description": "chat not found"}))
+    telegram(FakeResponse(200, {"ok": False, "description": "chat not found"}))
     with pytest.raises(PermanentError):
-        notifications.notify(RESUMEN)
+        notifications.notify(SUMMARY)
 
 
-def test_telegram_respuesta_ilegible_es_transitoria(telegram):
+def test_telegram_unreadable_response_is_retryable(telegram):
     """Un cuerpo que no es JSON no permite confirmar: se reintenta después."""
-    telegram(RespuestaFalsa(200, ValueError("sin JSON")))
+    telegram(FakeResponse(200, ValueError("sin JSON")))
     with pytest.raises(RetryableError):
-        notifications.notify(RESUMEN)
+        notifications.notify(SUMMARY)
 
 
-def test_f14_429_es_transitorio_y_acota_retry_after(telegram):
+def test_f14_429_is_retryable_and_caps_retry_after(telegram):
     """F14: el 429 espera como máximo 30 s aunque el proveedor pida más."""
-    telegram(RespuestaFalsa(429, {"ok": False}, {"Retry-After": "120"}))
-    with pytest.raises(RetryableError) as capturada:
-        notifications.notify(RESUMEN)
-    assert "reintentar_despues=30" in str(capturada.value)  # Tope del ejercicio.
+    telegram(FakeResponse(429, {"ok": False}, {"Retry-After": "120"}))
+    with pytest.raises(RetryableError) as captured:
+        notifications.notify(SUMMARY)
+    assert "reintentar_despues=30" in str(captured.value)  # Tope del ejercicio.
 
 
-@pytest.mark.parametrize("estado", [500, 502, 503])
-def test_f14_cinco_xx_es_transitorio(telegram, estado):
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_f14_five_xx_is_retryable(telegram, status):
     """F14: un 5xx puede resolverse solo; el mensaje se conserva."""
-    telegram(RespuestaFalsa(estado, {"ok": False}))
+    telegram(FakeResponse(status, {"ok": False}))
     with pytest.raises(RetryableError):
-        notifications.notify(RESUMEN)
+        notifications.notify(SUMMARY)
 
 
-@pytest.mark.parametrize("estado", [400, 401, 403])
-def test_errores_de_configuracion_son_permanentes(telegram, estado):
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_configuration_errors_are_permanent(telegram, status):
     """Credenciales o chat inválidos no se arreglan reintentando."""
-    telegram(RespuestaFalsa(estado, {"ok": False}))
-    with pytest.raises(PermanentError) as capturada:
-        notifications.notify(RESUMEN)
-    assert str(estado) in str(capturada.value)  # Diagnóstico de configuración.
+    telegram(FakeResponse(status, {"ok": False}))
+    with pytest.raises(PermanentError) as captured:
+        notifications.notify(SUMMARY)
+    assert str(status) in str(captured.value)  # Diagnóstico de configuración.
 
 
 @pytest.mark.parametrize("error", [
     notifications.requests.Timeout("timeout de prueba"),
     notifications.requests.ConnectionError("conexión rechazada"),
 ])
-def test_f14_timeout_y_conexion_no_filtran_el_token(telegram, error):
+def test_f14_timeout_and_connection_do_not_leak_the_token(telegram, error):
     """F14: un fallo de requests es transitorio y no arrastra la URL con el token."""
     telegram(error=error)
-    with pytest.raises(RetryableError) as capturada:
-        notifications.notify(RESUMEN)
-    assert TOKEN not in str(capturada.value)  # Sin secreto en el mensaje público.
-    assert capturada.value.__cause__ is None  # Sin cadena que imprima la URL del bot.
+    with pytest.raises(RetryableError) as captured:
+        notifications.notify(SUMMARY)
+    assert TOKEN not in str(captured.value)  # Sin secreto en el mensaje público.
+    assert captured.value.__cause__ is None  # Sin cadena que imprima la URL del bot.
 
 
-def test_sin_credenciales_no_llama_al_proveedor(telegram, monkeypatch):
+def test_missing_credentials_do_not_call_the_provider(telegram, monkeypatch):
     """Falta de configuración se diagnostica sin emitir la petición."""
-    doble = telegram(RespuestaFalsa(200, {"ok": True}))
+    fake = telegram(FakeResponse(200, {"ok": True}))
     monkeypatch.delenv("TELEGRAM_CHAT_ID")  # Sólo se retira el chat autorizado.
     with pytest.raises(PermanentError):
-        notifications.notify(RESUMEN)
-    assert doble.llamadas == []  # Sin petición: el problema es de configuración.
+        notifications.notify(SUMMARY)
+    assert fake.calls == []  # Sin petición: el problema es de configuración.
 
 
-def test_403_incluye_el_diagnostico_del_proveedor(telegram):
+def test_403_includes_provider_diagnosis(telegram):
     """Un 403 permanente explica la causa sin exponer el token."""
-    telegram(RespuestaFalsa(403, {"ok": False,
+    telegram(FakeResponse(403, {"ok": False,
                                  "description": "Forbidden: the bot can't send messages to the bot"}))
-    with pytest.raises(PermanentError) as capturada:
-        notifications.notify(RESUMEN)
-    assert "can't send messages to the bot" in str(capturada.value)  # Causa concreta.
-    assert TOKEN not in str(capturada.value)  # Sin secreto en el diagnóstico.
+    with pytest.raises(PermanentError) as captured:
+        notifications.notify(SUMMARY)
+    assert "can't send messages to the bot" in str(captured.value)  # Causa concreta.
+    assert TOKEN not in str(captured.value)  # Sin secreto en el diagnóstico.
 
 
-def test_proveedor_desconocido_es_error_de_configuracion(monkeypatch):
+def test_unknown_provider_is_a_configuration_error(monkeypatch):
     """Un NOTIFY_PROVIDER que nadie implementa no se adivina."""
     monkeypatch.setenv("NOTIFY_PROVIDER", "discord")
     with pytest.raises(PermanentError):
-        notifications.notify(RESUMEN)
+        notifications.notify(SUMMARY)
 
 
-def test_texto_largo_se_recorta_a_mil_caracteres(telegram):
+def test_long_text_is_truncated_to_1000_characters(telegram):
     """El contrato limita el resumen a 1000 caracteres aunque llegue más texto."""
-    doble = telegram(RespuestaFalsa(200, {"ok": True}))
+    fake = telegram(FakeResponse(200, {"ok": True}))
     notifications.notify("x" * 1500)
-    assert len(doble.llamadas[0]["json"]["text"]) == 1000
+    assert len(fake.calls[0]["json"]["text"]) == 1000

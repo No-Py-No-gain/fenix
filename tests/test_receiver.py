@@ -13,11 +13,11 @@ from fenix.services import receiver  # Módulo del rol I3.
 from fenix.utils.crypto import signature  # El emisor firma igual que la CLI real.
 from fenix.utils.errors import ValidationError  # Contrato de I1: evento no permitido.
 
-SECRETO = "clave-ficticia-solo-test"  # Fixture pública, no es secreto de ningún servicio.
-PREFIJO = "fenix-grupo01"  # Prefijo de colas aprobado por el contrato.
-URL_COLA = "http://localhost:4566/000000000000/fenix-grupo01"  # Igual a la que da el SDK.
-INVENTARIO = {"node-01": {"type": "ec2", "id": "i-0001"}}  # Forma que espera I1.
-EVENTO = {
+SECRET = "clave-ficticia-solo-test"  # Fixture pública, no es secreto de ningún servicio.
+PREFIX = "fenix-grupo01"  # Prefijo de colas aprobado por el contrato.
+QUEUE_URL = "http://localhost:4566/000000000000/fenix-grupo01"  # Igual a la que da el SDK.
+INVENTORY = {"node-01": {"type": "ec2", "id": "i-0001"}}  # Forma que espera I1.
+EVENT = {
     "schema_version": 1,
     "event_id": "evt-node-001",
     "event_type": "instance.stopped",
@@ -25,11 +25,11 @@ EVENTO = {
     "occurred_at": "2026-10-22T18:00:00Z",
     "simulate_failures": 0,
 }
-CLIENTE = TestClient(receiver.app)  # Una sola app para todas las pruebas.
+CLIENT = TestClient(receiver.app)  # Una sola app para todas las pruebas.
 
 
 @pytest.fixture
-def dobles(monkeypatch):
+def doubles(monkeypatch):
     """Sustituye las dependencias de I1/I2 y devuelve el registro de publicaciones.
 
     Args:
@@ -37,63 +37,63 @@ def dobles(monkeypatch):
     Returns:
         Diccionario con la lista de eventos efectivamente publicados.
     """
-    registro: dict = {"publicados": []}
-    monkeypatch.setenv("WEBHOOK_SECRET", SECRETO)
-    monkeypatch.setenv("QUEUE_PREFIX", PREFIJO)
-    monkeypatch.setattr(receiver, "load", lambda ruta: INVENTARIO)  # Sin disco real.
-    monkeypatch.setattr(receiver, "queue_url", lambda prefijo: URL_COLA)  # Sin red real.
+    calls: dict = {"published": []}
+    monkeypatch.setenv("WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("QUEUE_PREFIX", PREFIX)
+    monkeypatch.setattr(receiver, "load", lambda path: INVENTORY)  # Sin disco real.
+    monkeypatch.setattr(receiver, "queue_url", lambda prefix: QUEUE_URL)  # Sin red real.
 
-    def validate_ok(evento, inventario):
+    def validate_ok(event, inventory):
         """Copia el evento como haría la validación de I1 con una entrada correcta."""
-        return dict(evento)
+        return dict(event)
 
-    def publicar(url, evento, delay=0):
+    def fake_publish(url, event, delay=0):
         """Registra la publicación y devuelve un MessageId verosímil."""
-        registro["publicados"].append((url, evento))
+        calls["published"].append((url, event))
         return "msg-0001"
 
     monkeypatch.setattr(receiver, "validate", validate_ok)
-    monkeypatch.setattr(receiver, "publish", publicar)
-    return registro
+    monkeypatch.setattr(receiver, "publish", fake_publish)
+    return calls
 
 
-def firmar(cuerpo: bytes, timestamp: int | None = None) -> dict:
+def sign_body(body: bytes, timestamp: int | None = None) -> dict:
     """Genera las cabeceras que envía la CLI real para un cuerpo dado.
 
     Args:
-        cuerpo: Bytes exactos que se envían.
+        body: Bytes exactos que se envían.
         timestamp: Epoch a firmar; None usa el reloj actual.
     Returns:
         Diccionario de cabeceras listo para el cliente de pruebas.
     """
-    momento = int(time.time()) if timestamp is None else timestamp
-    digest = signature(SECRETO, momento, cuerpo)
-    return {"X-Webhook-Signature": f"t={momento},v1={digest}",
+    sent_at = int(time.time()) if timestamp is None else timestamp
+    digest = signature(SECRET, sent_at, body)
+    return {"X-Webhook-Signature": f"t={sent_at},v1={digest}",
             "Content-Type": "application/json"}
 
 
-def cuerpo_valido() -> bytes:
+def valid_body() -> bytes:
     """Serializa el evento de ejemplo sin espacios, como la CLI del enunciado."""
-    return json.dumps(EVENTO, separators=(",", ":")).encode("utf-8")
+    return json.dumps(EVENT, separators=(",", ":")).encode("utf-8")
 
 
-def test_f02_evento_valido_devuelve_202_con_message_id(dobles):
+def test_f02_valid_event_returns_202_with_message_id(doubles):
     """F02: acepta solo después de que SQS confirmó y devuelve los dos identificadores."""
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 202  # Aceptación durable, no 200 optimista.
-    datos = respuesta.json()
-    assert datos["status"] == "accepted"
-    assert datos["event_id"] == EVENTO["event_id"]  # Identifica la operación de negocio.
-    assert datos["message_id"] == "msg-0001"  # Viene de send_message, no se inventa.
-    assert len(dobles["publicados"]) == 1  # Una sola publicación.
-    url, evento = dobles["publicados"][0]
-    assert url == URL_COLA  # La URL la devuelve el SDK, no se arma a mano.
-    assert evento["event_id"] == EVENTO["event_id"]
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 202  # Aceptación durable, no 200 optimista.
+    data = response.json()
+    assert data["status"] == "accepted"
+    assert data["event_id"] == EVENT["event_id"]  # Identifica la operación de negocio.
+    assert data["message_id"] == "msg-0001"  # Viene de send_message, no se inventa.
+    assert len(doubles["published"]) == 1  # Una sola publicación.
+    url, event = doubles["published"][0]
+    assert url == QUEUE_URL  # La URL la devuelve el SDK, no se arma a mano.
+    assert event["event_id"] == EVENT["event_id"]
 
 
 @pytest.mark.parametrize(
-    "cabeceras",
+    "headers",
     [
         {},  # Firma ausente.
         {"X-Webhook-Signature": ""},  # Cabecera presente pero vacía.
@@ -104,159 +104,159 @@ def test_f02_evento_valido_devuelve_202_con_message_id(dobles):
         {"X-Webhook-Signature": "t=1000,v1=" + "c" * 64},  # Firma bien formada y falsa.
     ],
 )
-def test_f04_firma_invalida_devuelve_401_sin_publicar(dobles, cabeceras):
+def test_f04_invalid_signature_returns_401_without_publishing(doubles, headers):
     """F04: firma ausente, malformada o incorrecta no publica nada."""
-    respuesta = CLIENTE.post("/webhook", content=cuerpo_valido(), headers=cabeceras)
-    assert respuesta.status_code == 401  # Nunca 400 ni 500: es autenticación.
-    assert dobles["publicados"] == []  # El efecto exigido por la rúbrica: no publicar.
+    response = CLIENT.post("/webhook", content=valid_body(), headers=headers)
+    assert response.status_code == 401  # Nunca 400 ni 500: es autenticación.
+    assert doubles["published"] == []  # El efecto exigido por la rúbrica: no publicar.
 
 
-def test_f04_timestamp_de_hace_una_hora_devuelve_401(dobles):
+def test_f04_timestamp_from_an_hour_ago_returns_401(doubles):
     """F04: una firma correcta pero vieja se rechaza por la ventana de 300 s."""
-    cuerpo = cuerpo_valido()
-    headers = firmar(cuerpo, timestamp=int(time.time()) - 3600)  # Una hora atrás.
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=headers)
-    assert respuesta.status_code == 401
-    assert dobles["publicados"] == []
+    body = valid_body()
+    headers = sign_body(body, timestamp=int(time.time()) - 3600)  # Una hora atrás.
+    response = CLIENT.post("/webhook", content=body, headers=headers)
+    assert response.status_code == 401
+    assert doubles["published"] == []
 
 
-def test_f05_mismos_datos_otros_bytes_devuelve_401(dobles):
+def test_f05_same_data_different_bytes_returns_401(doubles):
     """F05: se firman unos bytes y se envían otros equivalentes como JSON."""
-    firmado = json.dumps(EVENTO, separators=(",", ":")).encode("utf-8")
-    enviado = json.dumps(EVENTO, indent=2).encode("utf-8")  # Mismo contenido, otros bytes.
-    respuesta = CLIENTE.post("/webhook", content=enviado, headers=firmar(firmado))
-    assert respuesta.status_code == 401  # La HMAC cubre bytes, no el significado.
-    assert dobles["publicados"] == []
+    signed = json.dumps(EVENT, separators=(",", ":")).encode("utf-8")
+    sent = json.dumps(EVENT, indent=2).encode("utf-8")  # Mismo contenido, otros bytes.
+    response = CLIENT.post("/webhook", content=sent, headers=sign_body(signed))
+    assert response.status_code == 401  # La HMAC cubre bytes, no el significado.
+    assert doubles["published"] == []
 
 
-def test_401_no_revela_motivo_ni_contenido(dobles):
+def test_401_reveals_neither_reason_nor_content(doubles):
     """El rechazo usa un mensaje genérico que no repite firma ni secreto."""
-    respuesta = CLIENTE.post("/webhook", content=cuerpo_valido(),
-                             headers={"X-Webhook-Signature": "t=9,v1=" + "b" * 64})
-    detalle = respuesta.json()["detail"]
-    assert SECRETO not in detalle  # Sin eco del secreto compartido.
-    assert "b" * 64 not in detalle  # Sin eco de la firma recibida.
+    response = CLIENT.post("/webhook", content=valid_body(),
+                           headers={"X-Webhook-Signature": "t=9,v1=" + "b" * 64})
+    detail = response.json()["detail"]
+    assert SECRET not in detail  # Sin eco del secreto compartido.
+    assert "b" * 64 not in detail  # Sin eco de la firma recibida.
 
 
 @pytest.mark.parametrize(
-    "cuerpo",
+    "body",
     [
         b'{"schema_version":',  # JSON truncado.
         b"",  # Cuerpo vacío con firma válida.
         b"\xff\xfe\x00",  # UTF-8 inválido.
     ],
 )
-def test_f06_cuerpo_ilegible_devuelve_400(dobles, cuerpo):
+def test_f06_unreadable_body_returns_400(doubles, body):
     """F06: JSON roto o UTF-8 inválido con firma válida es 400, no 401."""
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 400
-    assert dobles["publicados"] == []
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 400
+    assert doubles["published"] == []
 
 
-def test_f06_lista_json_devuelve_422(dobles, monkeypatch):
+def test_f06_json_list_returns_422(doubles, monkeypatch):
     """F06: una lista es JSON válido pero no es un evento; el contrato la rechaza."""
-    def validate_rechaza(evento, inventario):
+    def validate_rejects(event, inventory):
         """Simula la validación de I1 frente a un objeto que no es un evento."""
         raise ValidationError("El evento debe ser un objeto JSON")
 
-    monkeypatch.setattr(receiver, "validate", validate_rechaza)
-    cuerpo = b"[1,2,3]"  # Firmado correctamente: el problema es el contrato.
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 422
-    assert dobles["publicados"] == []
+    monkeypatch.setattr(receiver, "validate", validate_rejects)
+    body = b"[1,2,3]"  # Firmado correctamente: el problema es el contrato.
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 422
+    assert doubles["published"] == []
 
 
-def test_esquema_invalido_devuelve_422_sin_publicar(dobles, monkeypatch):
+def test_invalid_schema_returns_422_without_publishing(doubles, monkeypatch):
     """Un alias ajeno o una clave extra se rechazan antes de tocar SQS."""
-    def validate_rechaza(evento, inventario):
+    def validate_rejects(event, inventory):
         """Simula la validación de I1 frente a un recurso no inventariado."""
         raise ValidationError("resource_id no pertenece al inventario")
 
-    monkeypatch.setattr(receiver, "validate", validate_rechaza)
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 422
-    assert dobles["publicados"] == []
+    monkeypatch.setattr(receiver, "validate", validate_rejects)
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 422
+    assert doubles["published"] == []
 
 
-def test_cuerpo_mayor_a_16_kib_devuelve_413(dobles):
+def test_body_over_16_kib_returns_413(doubles):
     """Un cuerpo de más de 16 KiB se rechaza antes de autenticarlo."""
-    cuerpo = b'{"relleno":"' + b"x" * 20_000 + b'"}'  # Supera el límite del contrato.
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 413
-    assert dobles["publicados"] == []
+    body = b'{"relleno":"' + b"x" * 20_000 + b'"}'  # Supera el límite del contrato.
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 413
+    assert doubles["published"] == []
 
 
-def test_f13_sqs_caido_devuelve_503_sin_prometer_aceptacion(dobles, monkeypatch):
+def test_f13_sqs_down_returns_503_without_promising_acceptance(doubles, monkeypatch):
     """F13: si SQS rechaza el envío, la respuesta no puede ser 202."""
-    def publicar_falla(url, evento, delay=0):
+    def fake_publish_failure(url, event, delay=0):
         """Replica un ClientError de SQS al enviar."""
         raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}},
                           "SendMessage")
 
-    monkeypatch.setattr(receiver, "publish", publicar_falla)
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 503
-    assert respuesta.json()["detail"] != "accepted"  # Sin aceptación falsa.
+    monkeypatch.setattr(receiver, "publish", fake_publish_failure)
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 503
+    assert response.json()["detail"] != "accepted"  # Sin aceptación falsa.
 
 
-def test_f13_transporte_caido_devuelve_503(dobles, monkeypatch):
+def test_f13_transport_down_returns_503(doubles, monkeypatch):
     """F13: un fallo de transporte del SDK también es 503, no 500."""
-    def publicar_sin_red(url, evento, delay=0):
+    def fake_publish_network_failure(url, event, delay=0):
         """Replica un BotoCoreError de conexión con el emulador."""
         raise BotoCoreError()
 
-    monkeypatch.setattr(receiver, "publish", publicar_sin_red)
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 503
+    monkeypatch.setattr(receiver, "publish", fake_publish_network_failure)
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 503
 
 
-def test_sin_secreto_configurado_no_acepta(dobles, monkeypatch):
+def test_without_secret_configured_does_not_accept(doubles, monkeypatch):
     """Sin WEBHOOK_SECRET el receptor falla cerrado y no publica."""
     monkeypatch.delenv("WEBHOOK_SECRET", raising=False)
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 503  # Problema de configuración, no del cliente.
-    assert dobles["publicados"] == []
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 503  # Problema de configuración, no del cliente.
+    assert doubles["published"] == []
 
 
-def test_sin_prefijo_de_cola_no_acepta(dobles, monkeypatch):
+def test_without_queue_prefix_does_not_accept(doubles, monkeypatch):
     """Sin QUEUE_PREFIX tampoco se puede prometer aceptación."""
     monkeypatch.delenv("QUEUE_PREFIX", raising=False)
-    cuerpo = cuerpo_valido()
-    respuesta = CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    assert respuesta.status_code == 503
-    assert dobles["publicados"] == []
+    body = valid_body()
+    response = CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    assert response.status_code == 503
+    assert doubles["published"] == []
 
 
-class RegistroFalso:
+class FakeLog:
     """Doble del logger del proceso: anota nivel, mensaje y contexto público."""
 
     def __init__(self):
         """Empieza sin líneas registradas."""
-        self.lineas: list[tuple] = []
+        self.lines: list[tuple] = []
 
-    def _anotar(self, nivel: str, mensaje: str, extra: dict | None) -> None:
+    def _record(self, level: str, message: str, extra: dict | None) -> None:
         """Guarda una línea con la forma que produce el pipeline real."""
-        self.lineas.append((nivel, mensaje, extra or {}))
+        self.lines.append((level, message, extra or {}))
 
-    def info(self, mensaje: str, **opciones) -> None:
+    def info(self, message: str, **options) -> None:
         """Registra un nivel INFO."""
-        self._anotar("INFO", mensaje, opciones.get("extra"))
+        self._record("INFO", message, options.get("extra"))
 
-    def warning(self, mensaje: str, **opciones) -> None:
+    def warning(self, message: str, **options) -> None:
         """Registra un nivel WARNING."""
-        self._anotar("WARNING", mensaje, opciones.get("extra"))
+        self._record("WARNING", message, options.get("extra"))
 
-    def error(self, mensaje: str, **opciones) -> None:
+    def error(self, message: str, **options) -> None:
         """Registra un nivel ERROR."""
-        self._anotar("ERROR", mensaje, opciones.get("extra"))
+        self._record("ERROR", message, options.get("extra"))
 
 
 @pytest.fixture
-def registro(monkeypatch):
+def fake_log(monkeypatch):
     """Sustituye el logger del receptor por un doble observable.
 
     Args:
@@ -264,42 +264,42 @@ def registro(monkeypatch):
     Returns:
         El doble, con la lista de líneas registradas.
     """
-    doble = RegistroFalso()
-    monkeypatch.setattr(receiver, "_logger", lambda: doble)
-    return doble
+    fake = FakeLog()
+    monkeypatch.setattr(receiver, "_logger", lambda: fake)
+    return fake
 
 
-def test_el_202_registra_event_id_y_message_id(dobles, registro):
+def test_202_records_event_id_and_message_id(doubles, fake_log):
     """Una aceptación queda registrada con los dos identificadores correlacionados."""
-    cuerpo = cuerpo_valido()
-    CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    nivel, mensaje, extra = registro.lineas[-1]
-    assert (nivel, mensaje) == ("INFO", "evento_aceptado")
-    assert extra["event_id"] == EVENTO["event_id"]  # Permite cruzar con el ledger.
+    body = valid_body()
+    CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    level, message, extra = fake_log.lines[-1]
+    assert (level, message) == ("INFO", "evento_aceptado")
+    assert extra["event_id"] == EVENT["event_id"]  # Permite cruzar con el ledger.
     assert extra["message_id"] == "msg-0001"  # Y con la cola real.
     assert extra["status"] == 202
-    assert extra["resource_id"] == EVENTO["resource_id"]
+    assert extra["resource_id"] == EVENT["resource_id"]
 
 
-def test_el_401_registra_sin_inventar_contexto(dobles, registro):
+def test_401_records_without_inventing_context(doubles, fake_log):
     """Un rechazo por firma no publica un event_id que todavía no se leyó."""
-    CLIENTE.post("/webhook", content=cuerpo_valido(), headers={})
-    nivel, mensaje, extra = registro.lineas[-1]
-    assert (nivel, mensaje) == ("WARNING", "firma_invalida")
+    CLIENT.post("/webhook", content=valid_body(), headers={})
+    level, message, extra = fake_log.lines[-1]
+    assert (level, message) == ("WARNING", "firma_invalida")
     assert extra["status"] == 401
     assert "event_id" not in extra  # No se inventa contexto: no se leyó el cuerpo.
 
 
-def test_el_422_registra_el_event_id_recibido(dobles, registro, monkeypatch):
+def test_422_records_the_received_event_id(doubles, fake_log, monkeypatch):
     """Un contrato inválido deja rastro del evento que sí se pudo leer."""
-    def validate_rechaza(evento, inventario):
+    def validate_rejects(event, inventory):
         """Simula la validación de I1 frente a un recurso ajeno."""
         raise ValidationError("El recurso no pertenece al inventario autorizado")
 
-    monkeypatch.setattr(receiver, "validate", validate_rechaza)
-    cuerpo = cuerpo_valido()
-    CLIENTE.post("/webhook", content=cuerpo, headers=firmar(cuerpo))
-    nivel, mensaje, extra = registro.lineas[-1]
-    assert (nivel, mensaje) == ("WARNING", "evento_invalido")
-    assert extra["event_id"] == EVENTO["event_id"]
+    monkeypatch.setattr(receiver, "validate", validate_rejects)
+    body = valid_body()
+    CLIENT.post("/webhook", content=body, headers=sign_body(body))
+    level, message, extra = fake_log.lines[-1]
+    assert (level, message) == ("WARNING", "evento_invalido")
+    assert extra["event_id"] == EVENT["event_id"]
     assert extra["status"] == 422

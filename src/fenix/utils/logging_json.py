@@ -74,14 +74,14 @@ def gzip_rotate(source: str, dest: str) -> None:
         de la compresión deja el temporal, nunca un .gz incompleto que parezca
         válido. El original se borra recién después del reemplazo exitoso.
     """
-    temporal = dest + ".tmp"  # Nadie lee este nombre: es reemplazado de una vez.
+    temp_path = dest + ".tmp"  # Nadie lee este nombre: es reemplazado de una vez.
     try:
-        with open(source, "rb") as origin, gzip.open(temporal, "wb") as target:
+        with open(source, "rb") as origin, gzip.open(temp_path, "wb") as target:
             shutil.copyfileobj(origin, target)  # Procesa el contenido por bloques.
-        os.replace(temporal, dest)  # Publicación atómica del histórico.
+        os.replace(temp_path, dest)  # Publicación atómica del histórico.
     except OSError:  # Se retira el temporal para no acumular basura entre rotaciones.
-        if os.path.exists(temporal):
-            os.remove(temporal)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         raise
     os.remove(source)  # Solo se borra después del cierre exitoso del gzip.
 
