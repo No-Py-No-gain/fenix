@@ -5,9 +5,9 @@ import re  # Valida la forma exacta de la cabecera sin aceptar variantes de int(
 import time  # Comprueba la ventana temporal.
 from fenix.utils.errors import ValidationError  # Rechazo de autenticación público.
 
-PATRON_EPOCH = re.compile(r"[0-9]{1,12}")  # Solo dígitos: int() admite '_', '+' y espacios.
-PATRON_FIRMA = re.compile(r"[0-9a-f]{64}")  # Coincide con lo que emite signature().
-VENTANA_SEGUNDOS = 300  # Tolerancia hacia pasado y futuro que fija el contrato.
+EPOCH_PATTERN = re.compile(r"[0-9]{1,12}")  # Solo dígitos: int() admite '_', '+' y espacios.
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")  # Coincide con lo que emite signature().
+MAX_CLOCK_SKEW_SECONDS = 300  # Tolerancia hacia pasado y futuro que fija el contrato.
 
 
 def signature(secret: str, timestamp: int, body: bytes) -> str:
@@ -46,25 +46,25 @@ def verify(secret: str, header: str, body: bytes, now: int | None = None) -> Non
         Todos los rechazos comparten un mensaje genérico: el error no sirve para
         distinguir entre firma equivocada y fecha vencida, ni repite lo recibido.
     """
-    campos: dict[str, str] = {}  # Cada clave se admite una sola vez.
+    fields: dict[str, str] = {}  # Cada clave se admite una sola vez.
     try:  # Un header None también es un formato inválido, no un error del servidor.
-        for parte in header.split(","):
-            clave, separador, valor = parte.partition("=")
-            if not separador or clave in campos:  # Parte sin '=' o clave duplicada.
+        for part in header.split(","):
+            key, separator, value = part.partition("=")
+            if not separator or key in fields:  # Parte sin '=' o clave duplicada.
                 raise ValueError("cabecera ambigua")
-            campos[clave] = valor
-        if set(campos) != {"t", "v1"}:  # Ni claves extra ni ausentes.
+            fields[key] = value
+        if set(fields) != {"t", "v1"}:  # Ni claves extra ni ausentes.
             raise ValueError("claves inesperadas")
-        if not PATRON_EPOCH.fullmatch(campos["t"]):  # Rechaza '1_700' y ' 1000'.
+        if not EPOCH_PATTERN.fullmatch(fields["t"]):  # Rechaza '1_700' y ' 1000'.
             raise ValueError("epoch no entero")
-        if not PATRON_FIRMA.fullmatch(campos["v1"]):  # 64 hexadecimales en minúscula.
+        if not DIGEST_PATTERN.fullmatch(fields["v1"]):  # 64 hexadecimales en minúscula.
             raise ValueError("firma malformada")
     except (AttributeError, ValueError) as error:  # Se traduce sin repetir el valor.
         raise ValidationError("Firma inválida") from error
-    timestamp = int(campos["t"])  # Ya se comprobó que son solo dígitos.
-    esperada = signature(secret, timestamp, body)  # Firma los bytes originales.
-    if not hmac.compare_digest(esperada, campos["v1"]):  # Comparación de tiempo constante.
+    timestamp = int(fields["t"])  # Ya se comprobó que son solo dígitos.
+    expected = signature(secret, timestamp, body)  # Firma los bytes originales.
+    if not hmac.compare_digest(expected, fields["v1"]):  # Comparación de tiempo constante.
         raise ValidationError("Firma inválida")  # Mismo mensaje que un formato roto.
-    ahora = int(time.time()) if now is None else now  # Reloj inyectable en pruebas.
-    if abs(ahora - timestamp) > VENTANA_SEGUNDOS:  # 300 s inclusive en ambos sentidos.
+    current = int(time.time()) if now is None else now  # Reloj inyectable en pruebas.
+    if abs(current - timestamp) > MAX_CLOCK_SKEW_SECONDS:  # 300 s inclusive en ambos sentidos.
         raise ValidationError("Firma fuera de la ventana de 300 segundos")
